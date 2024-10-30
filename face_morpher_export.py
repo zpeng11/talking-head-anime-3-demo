@@ -109,3 +109,31 @@ for i in range(len(face_morpher_onnx_res)):
 #     newIm = ((eyebrow_morphing_combiner_onnx_output[i].reshape(4,INPUT_SIZE*INPUT_SIZE).transpose().reshape(INPUT_SIZE,INPUT_SIZE,4) / 2.0 + 0.5)*255).astype('uint8')
 #     im = Image.fromarray(newIm).convert('RGB')
 #     im.show()
+
+#Bench
+from time import time 
+
+in1 = im_morpher_crop.detach().numpy()
+in2 = face_pose.detach().numpy()
+t1 = time()
+for i in range(10):
+    face_morpher_onnx_res = ort_sess.run([            
+            'output_image', #0
+            'eye_alpha', #1
+            'eye_color_change', #2
+            'iris_mouth_image_1', #3
+            'iris_mouth_alpha', #4
+            'iris_mouth_color_change', #5
+            'iris_mouth_image_0', #6
+            ],
+            {'eyebrow_image_no_combine_alpha': in1,
+             "face_pose": in2
+             })
+t2 = time()
+print("Run 10 times in onnx cost:", t2 - t1)
+
+t1 = time()
+for i in range(10):
+    face_morpher(im_morpher_crop, face_pose)
+t2 = time()
+print("Run 10 times in pytorch cost:", t2 - t1)

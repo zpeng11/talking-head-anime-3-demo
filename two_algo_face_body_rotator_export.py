@@ -111,3 +111,28 @@ for i in range(len(two_algo_face_body_rotator_onnx_res)):
 #     newIm = ((eyebrow_morphing_combiner_onnx_output[i].reshape(4,INPUT_SIZE*INPUT_SIZE).transpose().reshape(INPUT_SIZE,INPUT_SIZE,4) / 2.0 + 0.5)*255).astype('uint8')
 #     im = Image.fromarray(newIm).convert('RGB')
 #     im.show()
+
+
+#Bench
+from time import time 
+
+t1 = time()
+i1 = face_morphed_half.detach().numpy()
+i2 = rotation_pose.detach().numpy()
+for i in range(10):
+    two_algo_face_body_rotator_onnx_res = ort_sess.run([            
+            'direct_image',
+            'warped_image',
+            'grid_change'
+            ],
+            {'face_morphed_half': i1,
+             "rotation_pose":i2
+             })
+t2 = time()
+print("Run 10 times in onnx cost:", t2 - t1)
+
+t1 = time()
+for i in range(10):
+    two_algo_face_body_rotator(face_morphed_half, rotation_pose)
+t2 = time()
+print("Run 10 times in pytorch cost:", t2 - t1)

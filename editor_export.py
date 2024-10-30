@@ -130,3 +130,33 @@ print(poser_torch_res.shape, editor_torch_res[0].shape)
 print("MSE is: ",((poser_torch_res.detach().numpy() - editor_torch_res[0].detach().numpy()) ** 2).mean())
 resImg = ((editor_onnx_res[0].reshape(4, 512* 512).transpose().reshape(512,512,4)/ 2.0 + 0.5)*255).astype('uint8')
 Image.fromarray(resImg).convert('RGB').save("result.jpg")
+
+#Bench
+from time import time 
+
+in1 = input_original_image.detach().numpy()
+in2 = full_warped_image.detach().numpy()
+in3 = full_grid_change.detach().numpy()
+in4 = rotation_pose.detach().numpy()
+t1 = time()
+for i in range(10):
+    editor_onnx_res = ort_sess.run([            
+            'output_color_changed',
+            'output_color_change_alpha',
+            'output_color_change',
+            'output_warped_image',
+            'output_grid_change',
+            ],
+            {'input_original_image': in1,
+             'full_warped_image': in2,
+             'full_grid_change': in3,
+             'rotation_pose': in4,
+             })
+t2 = time()
+print("Run 10 times in onnx cost:", t2 - t1)
+
+t1 = time()
+for i in range(10):
+    editor(input_original_image, full_warped_image, full_grid_change, rotation_pose)
+t2 = time()
+print("Run 10 times in pytorch cost:", t2 - t1)

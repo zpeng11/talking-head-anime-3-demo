@@ -77,10 +77,14 @@ torch.onnx.export(face_morpher,               # model being run
 import onnx
 onnx_model = onnx.load(ONNX_MODEL_NAME)
 onnx.checker.check_model(onnx_model)
+from onnxsim import simplify
+onnx_model_sim, check = simplify(onnx_model)
+assert check,"Simply is not avaialable"
+onnx.save(onnx_model_sim,"sim_"+ONNX_MODEL_NAME)
 
 import onnxruntime as ort
 import numpy as np
-ort_sess = ort.InferenceSession(ONNX_MODEL_NAME)
+ort_sess = ort.InferenceSession("sim_"+ONNX_MODEL_NAME)
 face_morpher_onnx_res = ort_sess.run([            
             'output_image', #0
             'eye_alpha', #1

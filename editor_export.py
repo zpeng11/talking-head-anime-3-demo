@@ -3,6 +3,7 @@ import numpy
 import PIL.Image
 from tha3.util import resize_PIL_image,extract_PIL_image_from_filelike, extract_pytorch_image_from_PIL_image
 from torch.nn.functional import interpolate
+from onnxsim import simplify
 
 MODEL_NAME = "standard_float"
 DEVICE_NAME = 'cpu'
@@ -46,7 +47,7 @@ def load_input_img():
 im = load_input_img().reshape(1,4,512,512)
 # im = torch.rand(1, 4, 512, 512) * 2.0 - 1.0
 pose = torch.zeros(1, pose_size, dtype=poser.get_dtype())
-poser.pose(im, pose)
+poser_torch_res = poser.pose(im, pose)
 
 im_decomposer_crop = im[:,:, 64:192, 64 + 128:192 + 128].clone()
 
@@ -93,10 +94,14 @@ torch.onnx.export(editor,               # model being run
 import onnx
 onnx_model = onnx.load(ONNX_MODEL_NAME)
 onnx.checker.check_model(onnx_model)
+from onnxsim import simplify
+onnx_model_sim, check = simplify(onnx_model)
+assert check,"Simply is not avaialable"
+onnx.save(onnx_model_sim,"sim_"+ONNX_MODEL_NAME)
 
 import onnxruntime as ort
 import numpy as np
-ort_sess = ort.InferenceSession(ONNX_MODEL_NAME)
+ort_sess = ort.InferenceSession("sim_"+ONNX_MODEL_NAME)
 editor_onnx_res = ort_sess.run([            
             'output_color_changed',
             'output_color_change_alpha',
@@ -111,7 +116,7 @@ editor_onnx_res = ort_sess.run([
              })
 
 
-# from PIL import Image
+from PIL import Image
 # INPUT_SIZE = 128
 for i in range(len(editor_onnx_res)):
     print("MSE is: ",((editor_onnx_res[i] - editor_torch_res[i].detach().numpy()) ** 2).mean())
@@ -121,3 +126,7 @@ for i in range(len(editor_onnx_res)):
 #     newIm = ((eyebrow_morphing_combiner_onnx_output[i].reshape(4,INPUT_SIZE*INPUT_SIZE).transpose().reshape(INPUT_SIZE,INPUT_SIZE,4) / 2.0 + 0.5)*255).astype('uint8')
 #     im = Image.fromarray(newIm).convert('RGB')
 #     im.show()
+print(poser_torch_res.shape, editor_torch_res[0].shape)
+print("MSE is: ",((poser_torch_res.detach().numpy() - editor_torch_res[0].detach().numpy()) ** 2).mean())
+resImg = ((editor_onnx_res[0].reshape(4, 512* 512).transpose().reshape(512,512,4)/ 2.0 + 0.5)*255).astype('uint8')
+Image.fromarray(resImg).convert('RGB').save("result.jpg")

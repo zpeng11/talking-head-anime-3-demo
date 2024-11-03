@@ -5,21 +5,23 @@ import torch.nn.functional as F
 
 # Affine_grid patch support from https://github.com/pytorch/pytorch/issues/30563#issuecomment-1295761759
 def affine_grid(theta, size, align_corners=False):
+    device = theta.device
+    dtype = theta.dtype
     N, C, H, W = size
-    grid = create_grid(N, C, H, W)
+    grid = create_grid(N, C, H, W, device, dtype)
     grid = grid.view(N, H * W, 3).bmm(theta.transpose(1, 2))
     grid = grid.view(N, H, W, 2)
     return grid
 
-def create_grid(N, C, H, W):
-    grid = torch.empty((N, H, W, 3), dtype=torch.float32)
-    grid.select(-1, 0).copy_(linspace_from_neg_one(W))
-    grid.select(-1, 1).copy_(linspace_from_neg_one(H).unsqueeze_(-1))
+def create_grid(N, C, H, W, device, dtype):
+    grid = torch.empty((N, H, W, 3), device= device, dtype=dtype)
+    grid.select(-1, 0).copy_(linspace_from_neg_one(W, device=device, dtype=dtype))
+    grid.select(-1, 1).copy_(linspace_from_neg_one(H, device=device, dtype=dtype).unsqueeze_(-1))
     grid.select(-1, 2).fill_(1)
     return grid
     
-def linspace_from_neg_one(num_steps, dtype=torch.float32):
-    r = torch.linspace(-1, 1, num_steps, dtype=torch.float32)
+def linspace_from_neg_one(num_steps, device, dtype):
+    r = torch.linspace(-1, 1, num_steps, dtype=dtype, device=device)
     r = r * (num_steps - 1) / num_steps
     return r
 

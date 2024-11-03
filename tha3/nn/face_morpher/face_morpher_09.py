@@ -4,6 +4,8 @@ import torch
 from torch import Tensor
 from torch.nn import Sequential, Sigmoid, Tanh, Module
 from torch.nn.functional import affine_grid, grid_sample
+from tha3.nn.image_processing_util import patch_affine_grid_generator
+patch_affine_grid_generator()
 
 from tha3.nn.common.poser_encoder_decoder_00 import PoserEncoderDecoder00Args
 from tha3.nn.common.poser_encoder_decoder_00_separable import PoserEncoderDecoder00Separable

@@ -6,7 +6,7 @@ sys.path.insert(1, './')
 import numpy
 import onnxruntime
 import os
-from onnxruntime.quantization import CalibrationDataReader,QuantFormat,quantize_static,QuantType
+from onnxruntime.quantization import CalibrationDataReader,QuantFormat,quantize_static,QuantType,CalibrationMethod
 from PIL import Image
 import torch
 from torch.nn.functional import interpolate
@@ -14,7 +14,7 @@ from tha3.util import resize_PIL_image,extract_PIL_image_from_filelike, extract_
 import tha3
 from tqdm import tqdm
 
-MODEL_BEFORE = './editor.onnx'
+MODEL_BEFORE = './sim_editor.onnx'
 PREPROCESSED_MODEL = './quantize/sim_editor_infr.onnx'
 POSE_QUANTIZE_MODEL = './quantize/sim_editor_quant.onnx'
 IMAGES_DIR = './data/images'
@@ -73,17 +73,17 @@ def calcualteUntilEditor(im):
     results = []
 
     for rotation_pose in tqdm(rotation_poses):
-        two_algo_face_body_rotator_torch_res = two_algo_face_body_rotator(face_morphed_half, rotation_pose)
+        # two_algo_face_body_rotator_torch_res = two_algo_face_body_rotator(face_morphed_half, rotation_pose)
 
-        input_original_image = face_morphed_full
-        half_warped_image = two_algo_face_body_rotator_torch_res[1]
-        full_warped_image = interpolate(half_warped_image, size=(512, 512), mode='bilinear', align_corners=False)
-        half_grid_change = two_algo_face_body_rotator_torch_res[2]
-        full_grid_change = interpolate(half_grid_change, size=(512, 512), mode='bilinear', align_corners=False)
+        # input_original_image = face_morphed_full
+        # half_warped_image = two_algo_face_body_rotator_torch_res[1]
+        # full_warped_image = interpolate(half_warped_image, size=(512, 512), mode='bilinear', align_corners=False)
+        # half_grid_change = two_algo_face_body_rotator_torch_res[2]
+        # full_grid_change = interpolate(half_grid_change, size=(512, 512), mode='bilinear', align_corners=False)
         results.append({
-            'input_original_image':input_original_image.detach().numpy(),
-            'full_warped_image':full_warped_image.detach().numpy(),
-            'full_grid_change':full_grid_change.detach().numpy(),
+            'input_original_image':numpy.random.rand(1,4,512,512).astype(numpy.float32) * 2.0 - 1.0,
+            'full_warped_image':numpy.random.rand(1,4,512,512).astype(numpy.float32) * 2.0 - 1.0,
+            'full_grid_change':numpy.random.rand(1,2,512,512).astype(numpy.float32) * 2.0 - 1.0,
             'rotation_pose':rotation_pose.detach().numpy()
             })
     return results
@@ -124,10 +124,12 @@ quantize_static(
         PREPROCESSED_MODEL,
         POSE_QUANTIZE_MODEL,
         dr,
-        quant_format=QuantFormat.QOperator,
-        activation_type=QuantType.QUInt8,
+        quant_format=QuantFormat.QDQ,
+        activation_type=QuantType.QInt8,
         per_channel=False,
-        weight_type=QuantType.QUInt8,
+        reduce_range=True,
+        calibrate_method=CalibrationMethod.MinMax,
+        weight_type=QuantType.QInt8,
     )
 
 
@@ -180,3 +182,51 @@ for i in range(10):
                 'output_grid_change',
                 ],dr.data_list[0])
 print(time() - t1)
+
+from onnxruntime.quantization.qdq_loss_debug import (
+    collect_activations, compute_activation_error, compute_weight_error,
+    create_activation_matching, create_weight_matching,
+    modify_model_output_intermediate_tensors)
+
+def _generate_aug_model_path(model_path: str) -> str:
+    aug_model_path = (
+        model_path[: -len(".onnx")] if model_path.endswith(".onnx") else model_path
+    )
+    return aug_model_path + ".save_tensors.onnx"
+
+# print("------------------------------------------------\n")
+# print("Comparing weights of float model vs qdq model.....")
+
+# matched_weights = create_weight_matching(PREPROCESSED_MODEL, POSE_QUANTIZE_MODEL)
+# weights_error = compute_weight_error(matched_weights)
+# for weight_name, err in weights_error.items():
+#     print(f"Cross model error of '{weight_name}': {err}\n")
+
+# print("------------------------------------------------\n")
+# print("Augmenting models to save intermediate activations......")
+
+# aug_float_model_path = _generate_aug_model_path(PREPROCESSED_MODEL)
+# modify_model_output_intermediate_tensors(PREPROCESSED_MODEL, aug_float_model_path)
+
+# aug_qdq_model_path = _generate_aug_model_path(POSE_QUANTIZE_MODEL)
+# modify_model_output_intermediate_tensors(POSE_QUANTIZE_MODEL, aug_qdq_model_path)
+
+# print("------------------------------------------------\n")
+# print("Running the augmented floating point model to collect activations......")
+# dr.rewind()
+# input_data_reader = dr
+# float_activations = collect_activations(aug_float_model_path, input_data_reader)
+
+# print("------------------------------------------------\n")
+# print("Running the augmented qdq model to collect activations......")
+# input_data_reader.rewind()
+# qdq_activations = collect_activations(aug_qdq_model_path, input_data_reader)
+
+# print("------------------------------------------------\n")
+# print("Comparing activations of float model vs qdq model......")
+
+# act_matching = create_activation_matching(qdq_activations, float_activations)
+# act_error = compute_activation_error(act_matching)
+# for act_name, err in act_error.items():
+#     print(f"Cross model error of '{act_name}': {err['xmodel_err']} \n")
+#     print(f"QDQ error of '{act_name}': {err['qdq_err']} \n")

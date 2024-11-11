@@ -1,10 +1,11 @@
 import subprocess
 import os
-os.chdir('..')
+from os.path import join
 import sys
-sys.path.insert(1, './')
+from pathlib import Path
+sys.path.insert(0, join(os.path.dirname(os.path.realpath(__file__)), '..'))
 import numpy
-import onnxruntime
+import onnxruntime as ort
 import os
 from onnxruntime.quantization import CalibrationDataReader,QuantFormat,quantize_static,QuantType,CalibrationMethod
 from PIL import Image
@@ -14,12 +15,21 @@ from tha3.util import resize_PIL_image,extract_PIL_image_from_filelike, extract_
 import tha3
 from tqdm import tqdm
 
-MODEL_BEFORE = './sim_editor.onnx'
-PREPROCESSED_MODEL = './quantize/sim_editor_infr.onnx'
-POSE_QUANTIZE_MODEL = './quantize/sim_editor_quant.onnx'
+
+MODEL_NAME = "separable_float"
+MODEL_BEFORE = './onnx_model/fp32/editor.onnx'
+PREPROCESSED_MODEL = './quantize/editor_infr.onnx'
+POSE_QUANTIZE_MODEL = './quantize/editor_quant.onnx'
 IMAGES_DIR = './data/images'
 NUM_OF_SETUPS = 5
+DEVICE_NAME = 'cuda:0'
+providers = [("CUDAExecutionProvider", {"device_id": 0, #torch.cuda.current_device(),
+                                        "user_compute_stream": str(torch.cuda.current_stream().cuda_stream)})]
+sess_options = ort.SessionOptions()
+sess_options.log_severity_level=1
 
+device = torch.device(DEVICE_NAME)
+dtype = torch.float32
 
 
 
@@ -45,16 +55,16 @@ def load_poser(model: str, device: torch.device):
     else:
         raise RuntimeError("Invalid model: '%s'" % model)
 
-poser = load_poser('standard_float', 'cpu')
+poser = load_poser(MODEL_NAME, DEVICE_NAME)
 eyebrow_decomposer = poser.get_modules()['eyebrow_decomposer']
 eyebrow_morphing_combiner = poser.get_modules()['eyebrow_morphing_combiner']
 face_morpher = poser.get_modules()['face_morpher']
 two_algo_face_body_rotator = poser.get_modules()['two_algo_face_body_rotator']
 editor = poser.get_modules()['editor']
 
-eyebrow_pose = torch.zeros((1, 12))
-face_pose = torch.zeros((1,27))
-rotation_poses = [(torch.rand((1,6)) * 2.0 - 1.0) for _ in range(NUM_OF_SETUPS)]
+eyebrow_pose = torch.zeros((1, 12), device=device, dtype=dtype)
+face_pose = torch.zeros((1,27), device=device, dtype=dtype)
+rotation_poses = [(torch.rand((1,6), device=device, dtype=dtype) * 2.0 - 1.0) for _ in range(NUM_OF_SETUPS)]
 
 def calcualteUntilEditor(im):
     im_decomposer_crop = im[:,:, 64:192, 64 + 128:192 + 128].clone()
@@ -72,19 +82,19 @@ def calcualteUntilEditor(im):
     
     results = []
 
-    for rotation_pose in tqdm(rotation_poses):
-        # two_algo_face_body_rotator_torch_res = two_algo_face_body_rotator(face_morphed_half, rotation_pose)
+    for rotation_pose in rotation_poses:
+        two_algo_face_body_rotator_torch_res = two_algo_face_body_rotator(face_morphed_half, rotation_pose)
 
-        # input_original_image = face_morphed_full
-        # half_warped_image = two_algo_face_body_rotator_torch_res[1]
-        # full_warped_image = interpolate(half_warped_image, size=(512, 512), mode='bilinear', align_corners=False)
-        # half_grid_change = two_algo_face_body_rotator_torch_res[2]
-        # full_grid_change = interpolate(half_grid_change, size=(512, 512), mode='bilinear', align_corners=False)
+        input_original_image = face_morphed_full
+        half_warped_image = two_algo_face_body_rotator_torch_res[1]
+        full_warped_image = interpolate(half_warped_image, size=(512, 512), mode='bilinear', align_corners=False)
+        half_grid_change = two_algo_face_body_rotator_torch_res[2]
+        full_grid_change = interpolate(half_grid_change, size=(512, 512), mode='bilinear', align_corners=False)
         results.append({
-            'input_original_image':numpy.random.rand(1,4,512,512).astype(numpy.float32) * 2.0 - 1.0,
-            'full_warped_image':numpy.random.rand(1,4,512,512).astype(numpy.float32) * 2.0 - 1.0,
-            'full_grid_change':numpy.random.rand(1,2,512,512).astype(numpy.float32) * 2.0 - 1.0,
-            'rotation_pose':rotation_pose.detach().numpy()
+            'morphed_image':input_original_image.cpu().detach().numpy(),
+            'rotated_warped_image':full_warped_image.cpu().detach().numpy(),
+            'rotated_grid_change':full_grid_change.cpu().detach().numpy(),
+            'rotation_pose':rotation_pose.cpu().detach().numpy()
             })
     return results
 
@@ -95,7 +105,7 @@ def processImages(dir):
         filename = os.fsdecode(file)
         if filename.endswith(".png") or filename.endswith(".png"): 
             pil_image = resize_PIL_image(extract_PIL_image_from_filelike('data/images/'+filename), size=(512,512))
-            torch_input_image = extract_pytorch_image_from_PIL_image(pil_image).reshape(1,4,512,512)
+            torch_input_image = extract_pytorch_image_from_PIL_image(pil_image).reshape(1,4,512,512).to(device)
             all_inputs.extend(calcualteUntilEditor(torch_input_image))
     return all_inputs
 # res = processImages(IMAGES_DIR)
@@ -126,10 +136,14 @@ quantize_static(
         dr,
         quant_format=QuantFormat.QDQ,
         activation_type=QuantType.QInt8,
-        per_channel=False,
-        reduce_range=True,
-        calibrate_method=CalibrationMethod.MinMax,
+        per_channel=True,
+        reduce_range=False,
+        op_types_to_quantize=['Conv'],
+        calibrate_method=CalibrationMethod.Entropy,
         weight_type=QuantType.QInt8,
+        extra_options={
+            'ActivationSymmetric':True
+        }
     )
 
 
@@ -142,91 +156,16 @@ onnx.checker.check_model(onnx_model_quant)
 
 import onnxruntime as ort
 import numpy as np
-ort_sess_fp = ort.InferenceSession(MODEL_BEFORE)
-ort_sess_quant = ort.InferenceSession(POSE_QUANTIZE_MODEL)
+ort_sess_fp = ort.InferenceSession(MODEL_BEFORE, sess_options=sess_options, providers=providers)
+ort_sess_quant = ort.InferenceSession(POSE_QUANTIZE_MODEL, sess_options=sess_options, providers=providers)
 for data in dr.data_list:
-    ort_sess_fp_res = ort_sess_fp.run([            
-                'output_color_changed',
-                'output_color_change_alpha',
-                'output_color_change',
-                'output_warped_image',
-                'output_grid_change',
-                ],data)
-    ort_sess_quant_res = ort_sess_quant.run([            
-                'output_color_changed',
-                'output_color_change_alpha',
-                'output_color_change',
-                'output_warped_image',
-                'output_grid_change',
-                ],data)
+    ort_sess_fp_res = ort_sess_fp.run(None,data)
+    ort_sess_quant_res = ort_sess_quant.run(None,data)
     print("MSE is: ",((ort_sess_fp_res[0] - ort_sess_quant_res[0]) ** 2).mean())
     
-from time import time
-t1 = time()
-for i in range(10):
-    ort_sess_fp.run([            
-                'output_color_changed',
-                'output_color_change_alpha',
-                'output_color_change',
-                'output_warped_image',
-                'output_grid_change',
-                ],dr.data_list[0])
-print(time() - t1)
-t1 = time()
-for i in range(10):
-    ort_sess_quant.run([            
-                'output_color_changed',
-                'output_color_change_alpha',
-                'output_color_change',
-                'output_warped_image',
-                'output_grid_change',
-                ],dr.data_list[0])
-print(time() - t1)
 
-from onnxruntime.quantization.qdq_loss_debug import (
-    collect_activations, compute_activation_error, compute_weight_error,
-    create_activation_matching, create_weight_matching,
-    modify_model_output_intermediate_tensors)
+for i in tqdm(range(100)):
+    ort_sess_fp.run(None,dr.data_list[0])
 
-def _generate_aug_model_path(model_path: str) -> str:
-    aug_model_path = (
-        model_path[: -len(".onnx")] if model_path.endswith(".onnx") else model_path
-    )
-    return aug_model_path + ".save_tensors.onnx"
-
-# print("------------------------------------------------\n")
-# print("Comparing weights of float model vs qdq model.....")
-
-# matched_weights = create_weight_matching(PREPROCESSED_MODEL, POSE_QUANTIZE_MODEL)
-# weights_error = compute_weight_error(matched_weights)
-# for weight_name, err in weights_error.items():
-#     print(f"Cross model error of '{weight_name}': {err}\n")
-
-# print("------------------------------------------------\n")
-# print("Augmenting models to save intermediate activations......")
-
-# aug_float_model_path = _generate_aug_model_path(PREPROCESSED_MODEL)
-# modify_model_output_intermediate_tensors(PREPROCESSED_MODEL, aug_float_model_path)
-
-# aug_qdq_model_path = _generate_aug_model_path(POSE_QUANTIZE_MODEL)
-# modify_model_output_intermediate_tensors(POSE_QUANTIZE_MODEL, aug_qdq_model_path)
-
-# print("------------------------------------------------\n")
-# print("Running the augmented floating point model to collect activations......")
-# dr.rewind()
-# input_data_reader = dr
-# float_activations = collect_activations(aug_float_model_path, input_data_reader)
-
-# print("------------------------------------------------\n")
-# print("Running the augmented qdq model to collect activations......")
-# input_data_reader.rewind()
-# qdq_activations = collect_activations(aug_qdq_model_path, input_data_reader)
-
-# print("------------------------------------------------\n")
-# print("Comparing activations of float model vs qdq model......")
-
-# act_matching = create_activation_matching(qdq_activations, float_activations)
-# act_error = compute_activation_error(act_matching)
-# for act_name, err in act_error.items():
-#     print(f"Cross model error of '{act_name}': {err['xmodel_err']} \n")
-#     print(f"QDQ error of '{act_name}': {err['qdq_err']} \n")
+for i in tqdm(range(100)):
+    ort_sess_quant.run(None,dr.data_list[0])

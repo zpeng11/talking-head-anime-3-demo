@@ -21,14 +21,14 @@ import onnx_tool
 
 
 
-MODEL_NAME = "separable_float"
-HALF = False
+MODEL_NAME = "separable_half"
+HALF = True
 DEVICE_NAME = 'cuda:0'
 IMAGE_INPUT = os.path.join(os.path.dirname(os.path.realpath(__file__)),'..','data','images','crypko_07.png')
 USE_RANDOM_IMAGE = False
 TMP_DIR = join(os.path.dirname(os.path.realpath(__file__)),'tmp')
 Path(TMP_DIR).mkdir(parents=True, exist_ok=True)
-MODEL_DIR = join(os.path.dirname(os.path.realpath(__file__)),'fp32')
+MODEL_DIR = join(os.path.dirname(os.path.realpath(__file__)),'fp16')
 Path(MODEL_DIR).mkdir(parents=True, exist_ok=True)
 TMP_FILE_WRITE = join(TMP_DIR, 'tmp.onnx')
 
@@ -196,7 +196,7 @@ onnx.utils.extract_model(join(TMP_DIR, 'morpher_tmp.onnx'), FACE_MORPHER_ENCODER
 onnx.checker.check_model(onnx.load(FACE_MORPHER_ENCODER))
 FACE_MORPHER_NEW = join(MODEL_DIR, 'morpher.onnx')
 onnx.utils.extract_model(join(TMP_DIR, 'morpher_tmp.onnx'), FACE_MORPHER_NEW, 
-                         ['im_morpher_crop','input_image','face_pose',
+                         ['input_image','im_morpher_crop','face_pose',
                           '/face_morpher/body/downsample_blocks.3/downsample_blocks.3.3/Relu_output_0'], 
                          ['face_morphed_full', 'face_morphed_half'])
 onnx.checker.check_model(onnx.load(FACE_MORPHER_NEW))

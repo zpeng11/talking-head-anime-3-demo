@@ -115,57 +115,62 @@ def processImages(dir):
 #     for k,v in re.items():
 #         print(k, v.shape)
 
-class PoserDataReader(CalibrationDataReader):
-    def __init__(self, img_path: str):
-        self.enum_data = None
-        self.data_list = processImages(img_path)
-    def get_next(self):
-        if self.enum_data is None:
-            self.enum_data = iter(
-                self.data_list
-            )
-        return next(self.enum_data, None)
+# class PoserDataReader(CalibrationDataReader):
+#     def __init__(self, img_path: str):
+#         self.enum_data = None
+#         self.data_list = processImages(img_path)
+#     def get_next(self):
+#         if self.enum_data is None:
+#             self.enum_data = iter(
+#                 self.data_list
+#             )
+#         return next(self.enum_data, None)
 
-    def rewind(self):
-        self.enum_data = None
+#     def rewind(self):
+#         self.enum_data = None
 
-dr = PoserDataReader(IMAGES_DIR)
-quantize_static(
-        PREPROCESSED_MODEL,
-        POSE_QUANTIZE_MODEL,
-        dr,
-        quant_format=QuantFormat.QDQ,
-        activation_type=QuantType.QInt8,
-        per_channel=True,
-        reduce_range=False,
-        op_types_to_quantize=['Conv'],
-        calibrate_method=CalibrationMethod.Entropy,
-        weight_type=QuantType.QInt8,
-        extra_options={
-            'ActivationSymmetric':True
-        }
-    )
+calibrateData = processImages(IMAGES_DIR)
+
+import pickle
+
+with open("./quantize/calibrateData.pickle", "wb") as outfile:
+ 	# "wb" argument opens the file in binary mode
+	pickle.dump(calibrateData, outfile)
+# quantize_static(
+#         PREPROCESSED_MODEL,
+#         POSE_QUANTIZE_MODEL,
+#         dr,
+#         quant_format=QuantFormat.QDQ,
+#         # activation_type=QuantType.QInt8,
+#         per_channel=True,
+#         reduce_range=False,
+#         # op_types_to_quantize=['Conv'],
+#         calibrate_method=CalibrationMethod.MinMax,
+#         # weight_type=QuantType.QInt8,
+#         # extra_options={
+#         #     'ActivationSymmetric':True,
+#         #     "WeightSymmetric":True
+#         # }
+#     )
+
+# import onnx
+# onnx_model_fp32 = onnx.load(MODEL_BEFORE)
+# onnx_model_quant = onnx.load(POSE_QUANTIZE_MODEL)
+# onnx.checker.check_model(onnx_model_quant)
 
 
-
-import onnx
-onnx_model_fp32 = onnx.load(MODEL_BEFORE)
-onnx_model_quant = onnx.load(POSE_QUANTIZE_MODEL)
-onnx.checker.check_model(onnx_model_quant)
-
-
-import onnxruntime as ort
-import numpy as np
-ort_sess_fp = ort.InferenceSession(MODEL_BEFORE, sess_options=sess_options, providers=providers)
-ort_sess_quant = ort.InferenceSession(POSE_QUANTIZE_MODEL, sess_options=sess_options, providers=providers)
-for data in dr.data_list:
-    ort_sess_fp_res = ort_sess_fp.run(None,data)
-    ort_sess_quant_res = ort_sess_quant.run(None,data)
-    print("MSE is: ",((ort_sess_fp_res[0] - ort_sess_quant_res[0]) ** 2).mean())
+# import onnxruntime as ort
+# import numpy as np
+# ort_sess_fp = ort.InferenceSession(MODEL_BEFORE, sess_options=sess_options, providers=providers)
+# ort_sess_quant = ort.InferenceSession(POSE_QUANTIZE_MODEL, sess_options=sess_options, providers=providers)
+# for data in dr.data_list:
+#     ort_sess_fp_res = ort_sess_fp.run(None,data)
+#     ort_sess_quant_res = ort_sess_quant.run(None,data)
+#     print("MSE is: ",((ort_sess_fp_res[0] - ort_sess_quant_res[0]) ** 2).mean())
     
 
-for i in tqdm(range(100)):
-    ort_sess_fp.run(None,dr.data_list[0])
+# for i in tqdm(range(100)):
+#     ort_sess_fp.run(None,dr.data_list[0])
 
-for i in tqdm(range(100)):
-    ort_sess_quant.run(None,dr.data_list[0])
+# for i in tqdm(range(100)):
+#     ort_sess_quant.run(None,dr.data_list[0])

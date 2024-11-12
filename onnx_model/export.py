@@ -21,14 +21,14 @@ import onnx_tool
 
 
 
-MODEL_NAME = "separable_half"
-HALF = True
+MODEL_NAME = "separable_float"
+HALF = False
 DEVICE_NAME = 'cuda:0'
 IMAGE_INPUT = os.path.join(os.path.dirname(os.path.realpath(__file__)),'..','data','images','crypko_07.png')
 USE_RANDOM_IMAGE = False
 TMP_DIR = join(os.path.dirname(os.path.realpath(__file__)),'tmp')
 Path(TMP_DIR).mkdir(parents=True, exist_ok=True)
-MODEL_DIR = join(os.path.dirname(os.path.realpath(__file__)),'fp16')
+MODEL_DIR = join(os.path.dirname(os.path.realpath(__file__)),'fp32')
 Path(MODEL_DIR).mkdir(parents=True, exist_ok=True)
 TMP_FILE_WRITE = join(TMP_DIR, 'tmp.onnx')
 
@@ -226,7 +226,7 @@ class TwoAlgoFaceBodyRotatorWrapped(Module):
         full_warped_image = interpolate(res[1], size=(512, 512), mode='bilinear', align_corners=False)
         full_grid_change = interpolate(res[2], size=(512, 512), mode='bilinear', align_corners=False)
         return [full_warped_image, full_grid_change]
-two_algo_face_body_rotator_wrapped = TwoAlgoFaceBodyRotatorWrapped(two_algo_face_body_rotator)
+two_algo_face_body_rotator_wrapped = TwoAlgoFaceBodyRotatorWrapped(two_algo_face_body_rotator).eval()
 rotator_wrapped_torch_res = two_algo_face_body_rotator_wrapped(face_morpher_wrapped_torch_res[1], rotation_pose_zero)
 
 ROTATOR_OUTPUT_LIST = ['full_warped_image', 'full_grid_change']
@@ -260,9 +260,8 @@ class EditorWrapped(Module):
                 rotated_grid_change: Tensor,
                 pose: Tensor,
                 *args) -> List[Tensor]:
-        res = self.editor(morphed_image, rotated_warped_image, rotated_grid_change, pose)[0]
-        return res.reshape(4, 512 * 512).transpose(0,1).reshape(512,512,4)
-editor_wrapped = EditorWrapped(editor)
+        return self.editor(morphed_image, rotated_warped_image, rotated_grid_change, pose)[0]
+editor_wrapped = EditorWrapped(editor).eval()
 editor_wrapped_torch_res = editor_wrapped(face_morpher_wrapped_torch_res[0], 
                                           rotator_wrapped_torch_res[0], 
                                           rotator_wrapped_torch_res[1], 
@@ -330,7 +329,7 @@ class RunTest():
         if ref != None:
             def printInfo(a):
                 print(a.dtype, a.shape, np.max(a),np.min(a), np.mean(a), np.sum(a))
-            ref_np = ref.reshape(4, 512 * 512).transpose(0,1).reshape(512,512,4).cpu().detach().numpy()
+            ref_np = ref.cpu().detach().numpy()
             printInfo(editor_res[0])
             printInfo(ref_np)
             print("MSE is: ",((editor_res[0] - ref_np) ** 2).mean())

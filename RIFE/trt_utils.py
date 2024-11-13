@@ -1,23 +1,14 @@
-from ctypes import cdll, c_char_p
-libcudart = cdll.LoadLibrary('cudart64_12.dll')
-libcudart.cudaGetErrorString.restype = c_char_p
-def cudaSetDevice(device_idx):
-    ret = libcudart.cudaSetDevice(device_idx)
-    if ret != 0:
-        error_string = libcudart.cudaGetErrorString(ret)
-        raise RuntimeError("cudaSetDevice: " + error_string)
-cudaSetDevice(0) #No need but keep this when multi gpu case
-
 import argparse
 from pathlib import Path
 import sys
-from os.path import join
+import os
 import numpy as np
 import tensorrt as trt
 from typing import List, Tuple
 import pycuda.driver as cuda
 import pycuda.autoinit
 import numpy
+from os.path import join
 
 TRT_LOGGER = trt.Logger(trt.Logger.INFO)
 
@@ -46,6 +37,7 @@ def build_engine(onnx_file_path, precision:str):
         pass
     elif precision == 'fp16':
         config.set_flag(trt.BuilderFlag.FP16)
+        config.set_flag(trt.BuilderFlag.BF16)
     elif precision == 'int8':
         config.set_flag(trt.BuilderFlag.INT8)
     else:
@@ -172,9 +164,7 @@ class Processor:
         # set input shapes, the output shapes are inferred automatically
         for inp, inp_mem in zip(inputs, self.inputs):
             if inp.dtype != inp_mem.host.dtype or inp.shape != inp_mem.host.shape:
-                print('Given:', inp.dtype, inp.shape)
-                print('Expected:',inp_mem.host.dtype, inp_mem.host.shape)
-                raise ValueError('Input shape or type does not match')
+                raise ValueError('Given: '+str( inp.dtype) +" " +str( inp.shape) + ' Expected:'+str( inp_mem.host.dtype)+" "+ str(inp_mem.host.shape)+  ' Input shape or type does not match')
             np.copyto(inp_mem.host, inp)
 
         for inp_mem in self.inputs: inp_mem.htod(self.stream)

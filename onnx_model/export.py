@@ -21,14 +21,14 @@ import onnx_tool
 
 
 
-MODEL_NAME = "standard_half"
+MODEL_NAME = "separable_half"
 HALF = True
 DEVICE_NAME = 'cuda:0'
 IMAGE_INPUT = os.path.join(os.path.dirname(os.path.realpath(__file__)),'..','data','images','crypko_07.png')
 USE_RANDOM_IMAGE = False
 TMP_DIR = join(os.path.dirname(os.path.realpath(__file__)),'tmp')
 Path(TMP_DIR).mkdir(parents=True, exist_ok=True)
-MODEL_DIR = join(os.path.dirname(os.path.realpath(__file__)), 'standard','fp16')
+MODEL_DIR = join(os.path.dirname(os.path.realpath(__file__)), 'seperable','fp16')
 Path(MODEL_DIR).mkdir(parents=True, exist_ok=True)
 TMP_FILE_WRITE = join(TMP_DIR, 'tmp.onnx')
 
@@ -192,12 +192,12 @@ else:
 # Try to split out the Encoder part of the mopher model
 FACE_MORPHER_ENCODER = join(TMP_DIR, 'morpher_encoder.onnx')
 onnx.utils.extract_model(join(TMP_DIR, 'morpher_tmp.onnx'), FACE_MORPHER_ENCODER, ['im_morpher_crop'], 
-                         ['/face_morpher/downsample_blocks.3/downsample_blocks.3.2/Relu_output_0'])
+                         ['/face_morpher/body/downsample_blocks.3/downsample_blocks.3.3/Relu_output_0'])
 onnx.checker.check_model(onnx.load(FACE_MORPHER_ENCODER))
 FACE_MORPHER_NEW = join(MODEL_DIR, 'morpher.onnx')
 onnx.utils.extract_model(join(TMP_DIR, 'morpher_tmp.onnx'), FACE_MORPHER_NEW, 
                          ['input_image','im_morpher_crop','face_pose',
-                          '/face_morpher/downsample_blocks.3/downsample_blocks.3.2/Relu_output_0'], 
+                          '/face_morpher/body/downsample_blocks.3/downsample_blocks.3.3/Relu_output_0'], 
                          ['face_morphed_full', 'face_morphed_half'])
 onnx.checker.check_model(onnx.load(FACE_MORPHER_NEW))
 
@@ -211,7 +211,7 @@ eyebrow_combiner_new_model = onnx.compose.merge_models(
 )
 onnx.save(eyebrow_combiner_new_model, TMP_FILE_WRITE)
 onnx.utils.extract_model(TMP_FILE_WRITE, EYEBROW_COMBINER_NEW, ['input_image', 'eyebrow_background_layer', 'eyebrow_layer', 'eyebrow_pose'], 
-                         ['eyebrow_image', '/face_morpher/downsample_blocks.3/downsample_blocks.3.2/Relu_output_0'])
+                         ['eyebrow_image', '/face_morpher/body/downsample_blocks.3/downsample_blocks.3.3/Relu_output_0'])
 onnx.checker.check_model(onnx.load(EYEBROW_COMBINER_NEW))
 
 ROTATION_POSE_SHAPE = (1,6)
@@ -293,23 +293,23 @@ else:
 
 
 class RunTest():
-    def __init__(self, img = None, ref = None):
+    def __init__(self):
         if HALF:
             self.dtype = np.float16
         else:
             self.dtype = np.float32
-        self.decomposer_sess = ort.InferenceSession(join(MODEL_DIR, 'decomposer.onnx'), sess_options=sess_options, providers=providers)
-        self.combiner_sess = ort.InferenceSession(join(MODEL_DIR, "combiner.onnx"), sess_options=sess_options, providers=providers)
-        self.morpher_sess = ort.InferenceSession(join(MODEL_DIR, "morpher.onnx"), sess_options=sess_options, providers=providers)
-        self.rotator_sess = ort.InferenceSession(join(MODEL_DIR, "rotator.onnx"), sess_options=sess_options, providers=providers)
-        self.editor_sess = ort.InferenceSession(join(MODEL_DIR, "editor.onnx"), sess_options=sess_options, providers=providers)
-        if img == None:
-            img = np.random.rand(1, 4, 512, 512).astype(self.dtype) * 2.0 - 1.0
-        else:
-            img = img.cpu().detach().numpy()
-        self.eyebrow_pose_zero = np.zeros((1,12), dtype=self.dtype)
-        self.face_pose_zero = np.zeros((1,27), dtype=self.dtype)
-        self.rotation_pose_zero = np.zeros((1,6), dtype=self.dtype)
+        self.decomposer_sess = ort.InferenceSession(join(MODEL_DIR, 'decomposer.onnx'))#, sess_options=sess_options, providers=providers)
+        self.combiner_sess = ort.InferenceSession(join(MODEL_DIR, "combiner.onnx"))#, sess_options=sess_options, providers=providers)
+        self.morpher_sess = ort.InferenceSession(join(MODEL_DIR, "morpher.onnx"))#, sess_options=sess_options, providers=providers)
+        self.rotator_sess = ort.InferenceSession(join(MODEL_DIR, "rotator.onnx"))#, sess_options=sess_options, providers=providers)
+        self.editor_sess = ort.InferenceSession(join(MODEL_DIR, "editor.onnx"))#, sess_options=sess_options, providers=providers)
+
+    def run(self, img):
+        # if img == None:
+        #     img = np.random.rand(1, 4, 512, 512).astype(self.dtype) * 2.0 - 1.0
+        self.eyebrow_pose_zero = np.random.rand(1,12).astype(self.dtype)
+        self.face_pose_zero = np.random.rand(1,27).astype(self.dtype)
+        self.rotation_pose_zero = np.random.rand(1,6).astype(self.dtype)
 
         decomposer_res = self.decomposer_sess.run(None, {'input_image':img,})
         combiner_res = self.combiner_sess.run(None, {'input_image':img,
@@ -319,25 +319,40 @@ class RunTest():
         morpher_res = self.morpher_sess.run(None, {'input_image':img,
                                                    'im_morpher_crop': combiner_res[0], 
                                                    'face_pose': self.face_pose_zero,
-                                                   '/face_morpher/downsample_blocks.3/downsample_blocks.3.2/Relu_output_0':combiner_res[1]})
+                                                   '/face_morpher/body/downsample_blocks.3/downsample_blocks.3.3/Relu_output_0':combiner_res[1]})
         rotator_res = self.rotator_sess.run(None, {'face_morphed_half':morpher_res[1], 
                                                    'rotation_pose':self.rotation_pose_zero})
         editor_res = self.editor_sess.run(None, {'morphed_image':morpher_res[0],
                                                  'rotated_warped_image':rotator_res[0],
                                                  'rotated_grid_change': rotator_res[1], 
                                                  'rotation_pose':self.rotation_pose_zero})
-        if ref != None:
-            def printInfo(a):
-                print(a.dtype, a.shape, np.max(a),np.min(a), np.mean(a), np.sum(a))
-            ref_np = ref.cpu().detach().numpy()
-            printInfo(editor_res[0])
-            printInfo(ref_np)
-            print("MSE is: ",((editor_res[0] - ref_np) ** 2).mean())
+        ref = poser.pose(torch.from_numpy(img).to(device), 
+                         torch.from_numpy(np.concatenate((self.eyebrow_pose_zero, self.face_pose_zero, self.rotation_pose_zero),axis=1)).to(device))[0]
+        def printInfo(a):
+            print(a.dtype, a.shape, np.max(a),np.min(a), np.mean(a), np.sum(a))
+        ref_np = ref.cpu().detach().numpy()
+        printInfo(editor_res[0][0])
+        printInfo(ref_np)
+        print("MSE is: ",((editor_res[0] - ref_np) ** 2).mean())
             # from PIL import Image
             # def saveImg(path:str, arry):
             #     resImg = ((arry/2.0 + 0.5)*255).astype('uint8')
             #     Image.fromarray(resImg).convert('RGB').save(path)
             # saveImg('test_res.jpg',editor_res[0])
             # saveImg('ref.jpg', ref_np)
-            
-RunTest(pt_img, poser_torch_res[0])
+
+from tqdm import tqdm
+
+t = RunTest()
+def processImages(dir):
+    all_inputs = []
+    directory = os.fsencode(dir)
+    for file in tqdm(os.listdir(directory)):
+        filename = os.fsdecode(file)
+        if filename.endswith(".png") or filename.endswith(".png"): 
+            pil_image = resize_PIL_image(extract_PIL_image_from_filelike(join(dir, filename)), size=(512,512))
+            torch_input_image = extract_pytorch_image_from_PIL_image(pil_image).reshape(1,4,512,512).half().detach().numpy()
+            t.run(torch_input_image)
+
+
+processImages(join('.','data','images'))

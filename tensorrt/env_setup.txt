@@ -1,4 +1,3 @@
 conda install conda-forge::pycuda onnx onnxruntime anaconda::cudnn tqdm
-python -m pip install --upgrade pip
-python -m pip install wheel
-python -m pip install --upgrade tensorrt-cu11
+python -m pip install --upgrade pip wheel
+python -m pip install --upgrade nvidia-cudnn-cu12 tensorrt-cu12

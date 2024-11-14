@@ -7,15 +7,15 @@ import math
 from trt_utils import *
 from torchvision.transforms.functional import adjust_sharpness
 
-dtype = torch.float32
+dtype = torch.half
 modulo = 128
 
 device = torch.device("cuda", 0)
 model_name = "flownet.pkl"
-export_name = './export/rife_512'
+export_name = './export/rife_256'
 
 image_size = 512
-internal_size = 512
+internal_size = 256
 sharpen_factor = 1
 
 scale = 1.0

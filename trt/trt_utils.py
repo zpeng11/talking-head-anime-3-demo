@@ -102,11 +102,12 @@ class Processor:
             dtype = trt.nptype(engine.get_tensor_dtype(bindingName))
             host_mem = cuda.pagelocked_empty(shape, dtype)
             device_mem = cuda.mem_alloc(host_mem.nbytes)
+            mem = HostDeviceMem(host_mem, device_mem)
             self.context.set_tensor_address(bindingName, int(device_mem)) # Use this setup without binding for v3
             if bindingName in self.input_tensor_names:
-                self.inputs.append(HostDeviceMem(host_mem, device_mem))
+                self.inputs.append(mem)
             else:
-                self.outputs.append(HostDeviceMem(host_mem, device_mem))
+                self.outputs.append(mem)
 
         # create stream
         self.stream = cuda.Stream()

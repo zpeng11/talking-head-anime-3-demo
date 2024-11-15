@@ -140,14 +140,14 @@ class Processor:
         # Synchronize the stream
         self.stream.synchronize()
 
-    def extractOutputs(copy:bool = True) -> List[np.ndarray]:
+    def extractOutputs(self, copy:bool = True) -> List[np.ndarray]:
         for out_mem in self.outputs: out_mem.dtoh(self.stream)
         # Synchronize the stream
         self.stream.synchronize()
         if copy:
-            return [np.copy(out.host) for outp in self.outputs]
+            return [np.copy(outp.host) for outp in self.outputs]
         else:
-            return [out.host for outp in self.outputs]
+            return [outp.host for outp in self.outputs]
         
         
     def inference(self, inputs: List[np.ndarray]) -> List[np.ndarray]:

@@ -11,12 +11,11 @@ sys.path.append(os.getcwd())
 from tha3.mocap.ifacialmocap_pose import create_default_ifacialmocap_pose
 from tha3.mocap.ifacialmocap_v2 import IFACIALMOCAP_PORT, IFACIALMOCAP_START_STRING, parse_ifacialmocap_v2_pose, \
     parse_ifacialmocap_v1_pose
-from tha3.poser.modes.load_poser import load_poser
 
 import torch
 import wx
 
-from tha3.poser.poser import Poser
+from rt_poser.rt_poser import Poser
 from tha3.mocap.ifacialmocap_constants import *
 from tha3.mocap.ifacialmocap_pose_converter import IFacialMocapPoseConverter
 from tha3.util import torch_linear_to_srgb, resize_PIL_image, extract_PIL_image_from_filelike, \
@@ -422,7 +421,7 @@ if __name__ == "__main__":
 
     device = torch.device('cuda')
     try:
-        poser = load_poser(args.model, device)
+        poser = Poser(args.model)
     except RuntimeError as e:
         print(e)
         sys.exit()

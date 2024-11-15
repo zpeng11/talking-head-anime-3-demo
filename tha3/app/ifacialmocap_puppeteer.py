@@ -15,7 +15,7 @@ from tha3.mocap.ifacialmocap_v2 import IFACIALMOCAP_PORT, IFACIALMOCAP_START_STR
 import torch
 import wx
 
-from rt_poser.rt_poser import Poser
+from rt_poser.rt_poser import PoserRT
 from tha3.mocap.ifacialmocap_constants import *
 from tha3.mocap.ifacialmocap_pose_converter import IFacialMocapPoseConverter
 from tha3.util import torch_linear_to_srgb, resize_PIL_image, extract_PIL_image_from_filelike, \
@@ -45,7 +45,7 @@ class FpsStatistics:
 
 
 class MainFrame(wx.Frame):
-    def __init__(self, poser: Poser, pose_converter: IFacialMocapPoseConverter, device: torch.device):
+    def __init__(self, poser: PoserRT, pose_converter: IFacialMocapPoseConverter, device: torch.device):
         super().__init__(None, wx.ID_ANY, "iFacialMocap Puppeteer (Marigold)")
         self.pose_converter = pose_converter
         self.poser = poser
@@ -323,7 +323,7 @@ class MainFrame(wx.Frame):
         pose = torch.tensor(current_pose, device=self.device, dtype=self.poser.get_dtype())
 
         with torch.no_grad():
-            output_image = self.poser.pose(self.torch_source_image, pose)[0].float()
+            output_image = self.poser.pose(pose)[0].float()
             output_image = convert_linear_to_srgb((output_image + 1.0) / 2.0)
 
             background_choice = self.output_background_choice.GetSelection()
@@ -398,6 +398,7 @@ class MainFrame(wx.Frame):
                     self.wx_source_image = wx.Bitmap.FromBufferRGBA(w, h, pil_image.convert("RGBA").tobytes())
                     self.torch_source_image = extract_pytorch_image_from_PIL_image(pil_image) \
                         .to(self.device).to(self.poser.get_dtype())
+                self.poser.updateImage(self.torch_source_image)
                 self.update_source_image_bitmap()
             except:
                 message_dialog = wx.MessageDialog(self, "Could not load image " + image_file_name, "Poser", wx.OK)
@@ -421,7 +422,7 @@ if __name__ == "__main__":
 
     device = torch.device('cuda')
     try:
-        poser = Poser(args.model)
+        poser = PoserRT(args.model)
     except RuntimeError as e:
         print(e)
         sys.exit()

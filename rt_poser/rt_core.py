@@ -75,10 +75,8 @@ class RTCoreBase(ABC):
         self.prepareMemories()
         self.setMemsToEngines()
 
-    def inference(self):
-        return
-
     def prepareProcs(self, model_dir):
+        TRT_LOGGER.log(TRT_LOGGER.INFO, 'Creating Engines')
         self.decomposer = Engine(join(model_dir, 'decomposer.trt'), 1)
         self.combiner = Engine(join(model_dir, 'combiner.trt'), 4)
         self.morpher = Engine(join(model_dir, 'morpher.trt'), 4)
@@ -86,6 +84,7 @@ class RTCoreBase(ABC):
         self.editor = Engine(join(model_dir, 'editor.trt'), 4)
 
     def prepareMemories(self):
+        TRT_LOGGER.log(TRT_LOGGER.INFO, 'Creating memories on VRAM')
         self.memories = {}
         self.memories['input_img'] = createMemory(self.decomposer.inputs[0])
         self.memories["background_layer"] = createMemory(self.decomposer.outputs[0])
@@ -106,6 +105,7 @@ class RTCoreBase(ABC):
         self.memories['output_img'] = createMemory(self.editor.outputs[0])
 
     def setMemsToEngines(self):
+        TRT_LOGGER.log(TRT_LOGGER.INFO, 'Linking memories on VRAM to engine graph nodes')
         decomposer_inputs = [self.memories['input_img']]
         self.decomposer.setInputMems(decomposer_inputs)
         decomposer_outputs = [self.memories["background_layer"], self.memories["eyebrow_layer"]]
@@ -131,3 +131,45 @@ class RTCoreBase(ABC):
         editor_outputs = [self.memories['output_img']]
         self.editor.setOutputMems(editor_outputs)
 
+class RTCoreProcess(RTCoreBase):
+    def __init__(self, model_dir):
+        super().__init__(model_dir)
+        # create stream
+        self.stream = cuda.Stream()
+        # Create a CUDA events
+        self.start_event = cuda.Event()
+        self.end_event = cuda.Event()
+    def get_last_inference_time(self):
+        return self.start_event.time_till(self.end_event)
+    
+    def setImage(self, img:np.ndarray):
+        assert(len(img.shape) == 4 and 
+               img.shape[0] == 1 and 
+               img.shape[1] == 4 and 
+               img.shape[2] == 512 and 
+               img.shape[3] == 512)
+        np.copyto(self.memories['input_img'].host, img)
+        self.memories['input_img'].htod(self.stream)
+        self.decomposer.exec(self.stream)
+        self.stream.synchronize()
+    def inference(self, pose:np.ndarray):
+        self.start_event.record(self.stream)
+
+        np.copyto(self.memories['eyebrow_pose'].host, pose[:, :12])
+        self.memories['eyebrow_pose'].htod(self.stream)
+        np.copyto(self.memories['face_pose'].host, pose[:,12:12+27])
+        self.memories['face_pose'].htod(self.stream)
+        np.copyto(self.memories['rotation_pose'].host, pose[:,12+27:])
+        self.memories['rotation_pose'].htod(self.stream)
+
+        self.decomposer.exec(self.stream)
+        self.combiner.exec(self.stream)
+        self.morpher.exec(self.stream)
+        self.rotator.exec(self.stream)
+        self.editor.exec(self.stream)
+
+        self.memories['output_img'].dtoh(self.stream)
+        
+        self.end_event.record(self.stream)
+        self.stream.synchronize()
+        return self.memories['output_img'].host

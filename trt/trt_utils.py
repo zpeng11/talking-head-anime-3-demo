@@ -6,7 +6,7 @@ import numpy as np
 import tensorrt as trt
 from typing import List, Tuple
 import pycuda.driver as cuda
-import pycuda.autoinit
+import pycuda
 from os.path import join
 import numpy
 
@@ -76,9 +76,9 @@ class HostDeviceMem(object):
         return self.__str__()
     def __del__(self):
         self.device.free()
-    def dtoh(self, stream:pycuda._driver.Stream):
+    def dtoh(self, stream:pycuda.driver.Stream):
         cuda.memcpy_dtoh_async(self.host, self.device, stream) 
-    def htod(self, stream:pycuda._driver.Stream):
+    def htod(self, stream:pycuda.driver.Stream):
         cuda.memcpy_htod_async(self.device, self.host, stream)
 
 class Processor:

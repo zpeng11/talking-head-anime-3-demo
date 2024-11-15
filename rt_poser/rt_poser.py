@@ -11,7 +11,31 @@ cuda.init()
 device = cuda.Device(0)
 cuda_driver_context = device.make_context()
 from time import time
+from rt_poser.rt_core import RTCoreProcess
 
+class PoserRT:
+    def __init__(self, model:str) -> None:
+        model_type = 'seperable' if 'separable' in model else 'standard'
+        dtype = 'fp16' if 'half' in model else 'fp32'
+        self.dtype = torch.half if 'half' in model else torch.float
+        model_dir = join('rt_poser', model_type, dtype)
+        self.core = RTCoreProcess(model_dir)
+        
+    def get_image_size(self):
+        return 512
+    
+    def get_dtype(self):
+        return self.dtype
+    
+    def updateImage(self, img:torch.Tensor):
+        self.core.setImage(img.cpu().detach().numpy().reshape(1,4,512,512))
+
+    def pose(self, pose:torch.Tensor):
+        cuda_driver_context.push()
+        res = self.core.inference(pose.cpu().detach().numpy().reshape(1,45))
+        cuda_driver_context.pop()
+        print(self.core.get_last_inference_time())
+        return torch.from_numpy(res).to('cuda:0')
 
 class Poser:
     def __init__(self, model:str) -> None:

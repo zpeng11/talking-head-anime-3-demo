@@ -21,14 +21,14 @@ import onnx_tool
 
 
 
-MODEL_NAME = "separable_half"
-HALF = True
+MODEL_NAME = "standard_float"
+HALF = False
 DEVICE_NAME = 'cuda:0'
 IMAGE_INPUT = os.path.join(os.path.dirname(os.path.realpath(__file__)),'..','data','images','crypko_07.png')
 USE_RANDOM_IMAGE = False
 TMP_DIR = join(os.path.dirname(os.path.realpath(__file__)),'tmp')
 Path(TMP_DIR).mkdir(parents=True, exist_ok=True)
-MODEL_DIR = join(os.path.dirname(os.path.realpath(__file__)), 'seperable','fp16')
+MODEL_DIR = join(os.path.dirname(os.path.realpath(__file__)), 'standard','fp32')
 Path(MODEL_DIR).mkdir(parents=True, exist_ok=True)
 TMP_FILE_WRITE = join(TMP_DIR, 'tmp.onnx')
 
@@ -192,12 +192,12 @@ else:
 # Try to split out the Encoder part of the mopher model
 FACE_MORPHER_ENCODER = join(TMP_DIR, 'morpher_encoder.onnx')
 onnx.utils.extract_model(join(TMP_DIR, 'morpher_tmp.onnx'), FACE_MORPHER_ENCODER, ['im_morpher_crop'], 
-                         ['/face_morpher/body/downsample_blocks.3/downsample_blocks.3.3/Relu_output_0'])
+                         ['/face_morpher/downsample_blocks.3/downsample_blocks.3.2/Relu_output_0'])
 onnx.checker.check_model(onnx.load(FACE_MORPHER_ENCODER))
 FACE_MORPHER_NEW = join(MODEL_DIR, 'morpher.onnx')
 onnx.utils.extract_model(join(TMP_DIR, 'morpher_tmp.onnx'), FACE_MORPHER_NEW, 
                          ['input_image','im_morpher_crop','face_pose',
-                          '/face_morpher/body/downsample_blocks.3/downsample_blocks.3.3/Relu_output_0'], 
+                          '/face_morpher/downsample_blocks.3/downsample_blocks.3.2/Relu_output_0'], 
                          ['face_morphed_full', 'face_morphed_half'])
 onnx.checker.check_model(onnx.load(FACE_MORPHER_NEW))
 
@@ -211,7 +211,7 @@ eyebrow_combiner_new_model = onnx.compose.merge_models(
 )
 onnx.save(eyebrow_combiner_new_model, TMP_FILE_WRITE)
 onnx.utils.extract_model(TMP_FILE_WRITE, EYEBROW_COMBINER_NEW, ['input_image', 'eyebrow_background_layer', 'eyebrow_layer', 'eyebrow_pose'], 
-                         ['eyebrow_image', '/face_morpher/body/downsample_blocks.3/downsample_blocks.3.3/Relu_output_0'])
+                         ['eyebrow_image', '/face_morpher/downsample_blocks.3/downsample_blocks.3.2/Relu_output_0'])
 onnx.checker.check_model(onnx.load(EYEBROW_COMBINER_NEW))
 
 ROTATION_POSE_SHAPE = (1,6)
@@ -260,7 +260,7 @@ class EditorWrapped(Module):
                 rotated_grid_change: Tensor,
                 pose: Tensor,
                 *args) -> List[Tensor]:
-        return self.editor(morphed_image, rotated_warped_image, rotated_grid_change, pose)[0]
+        return self.editor(morphed_image, rotated_warped_image, rotated_grid_change, pose)[0].half()
 editor_wrapped = EditorWrapped(editor).eval()
 editor_wrapped_torch_res = editor_wrapped(face_morpher_wrapped_torch_res[0], 
                                           rotator_wrapped_torch_res[0], 
@@ -319,7 +319,7 @@ class RunTest():
         morpher_res = self.morpher_sess.run(None, {'input_image':img,
                                                    'im_morpher_crop': combiner_res[0], 
                                                    'face_pose': self.face_pose_zero,
-                                                   '/face_morpher/body/downsample_blocks.3/downsample_blocks.3.3/Relu_output_0':combiner_res[1]})
+                                                   '/face_morpher/downsample_blocks.3/downsample_blocks.3.2/Relu_output_0':combiner_res[1]})
         rotator_res = self.rotator_sess.run(None, {'face_morphed_half':morpher_res[1], 
                                                    'rotation_pose':self.rotation_pose_zero})
         editor_res = self.editor_sess.run(None, {'morphed_image':morpher_res[0],
@@ -351,7 +351,7 @@ def processImages(dir):
         filename = os.fsdecode(file)
         if filename.endswith(".png") or filename.endswith(".png"): 
             pil_image = resize_PIL_image(extract_PIL_image_from_filelike(join(dir, filename)), size=(512,512))
-            torch_input_image = extract_pytorch_image_from_PIL_image(pil_image).reshape(1,4,512,512).half().detach().numpy()
+            torch_input_image = extract_pytorch_image_from_PIL_image(pil_image).reshape(1,4,512,512).float().detach().numpy()
             t.run(torch_input_image)
 
 

@@ -1,5 +1,6 @@
 from trt_utils import *
 from tqdm import tqdm
+import pycuda.autoinit
 
 from os.path import join
 def convert(sourceDir, dstDir, componentName, dataType):

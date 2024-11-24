@@ -37,7 +37,6 @@ def build_engine(onnx_file_path, precision:str):
         pass
     elif precision == 'fp16':
         config.set_flag(trt.BuilderFlag.FP16)
-        config.set_flag(trt.BuilderFlag.BF16)
     elif precision == 'int8':
         config.set_flag(trt.BuilderFlag.INT8)
     else:

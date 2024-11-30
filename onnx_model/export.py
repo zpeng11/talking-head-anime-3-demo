@@ -1,10 +1,9 @@
 import torch
-import os
 from os.path import join
-import sys
 from pathlib import Path
-sys.path.insert(0, join(os.path.dirname(os.path.realpath(__file__)), '..'))
-import numpy
+import sys
+import os
+sys.path.append(os.getcwd())
 import numpy as np
 import PIL.Image
 from tha3.util import resize_PIL_image,extract_PIL_image_from_filelike, extract_pytorch_image_from_PIL_image
@@ -12,25 +11,40 @@ from tqdm import tqdm
 import onnx
 from onnxsim import simplify
 import onnxruntime as ort
-import numpy as np
 from torch import Tensor
 from torch.nn import Module
 from typing import List, Optional
 from torch.nn.functional import interpolate
 import onnx_tool
+import cv2
 
+if len(sys.argv) != 2:
+    raise ValueError('Do not get model name')
 
+MODEL_NAME = sys.argv[1]
+# "separable_float"
+# "separable_half"
+# "standard_float"
+# "standard_half"
 
-MODEL_NAME = "standard_float"
-HALF = False
+HALF = True if 'half' in MODEL_NAME else False
 DEVICE_NAME = 'cuda:0'
-IMAGE_INPUT = os.path.join(os.path.dirname(os.path.realpath(__file__)),'..','data','images','crypko_07.png')
-USE_RANDOM_IMAGE = False
-TMP_DIR = join(os.path.dirname(os.path.realpath(__file__)),'tmp')
+IMAGE_INPUT = os.path.join('.','data','images','crypko_07.png')
+
+TMP_DIR = join('.','onnx_model','tmp')
 Path(TMP_DIR).mkdir(parents=True, exist_ok=True)
-MODEL_DIR = join(os.path.dirname(os.path.realpath(__file__)), 'standard','fp32')
+MODEL_DIR = join('.',
+                 'onnx_model', 
+                 'standard' if 'standard' in MODEL_NAME else 'seperable',
+                 'fp32' if 'float' in MODEL_NAME else 'fp16')
 Path(MODEL_DIR).mkdir(parents=True, exist_ok=True)
 TMP_FILE_WRITE = join(TMP_DIR, 'tmp.onnx')
+
+CUT_OUTPUT = None
+if 'standard' in MODEL_NAME:
+    CUT_OUTPUT = '/face_morpher/downsample_blocks.3/downsample_blocks.3.2/Relu_output_0'  
+else:
+    CUT_OUTPUT = '/face_morpher/body/downsample_blocks.3/downsample_blocks.3.3/Relu_output_0' 
 
 providers = [("CUDAExecutionProvider", {"device_id": 0, #torch.cuda.current_device(),
                                         "user_compute_stream": str(torch.cuda.current_stream().cuda_stream)})]
@@ -68,39 +82,56 @@ two_algo_face_body_rotator = poser.get_modules()['two_algo_face_body_rotator']
 editor = poser.get_modules()['editor']
 
 #Prepare one pass inference image data
-pt_img = None
-if USE_RANDOM_IMAGE:
-    pt_img = torch.rand(1, 4, 512, 512,dtype=dtype, device=device) * 2.0 - 1.0
+pil_image = resize_PIL_image(extract_PIL_image_from_filelike(IMAGE_INPUT), size=(512,512))
+
+if HALF:
+    pt_img = extract_pytorch_image_from_PIL_image(pil_image).half().reshape(1,4,512,512).to(DEVICE_NAME)
 else:
-    pil_image = resize_PIL_image(extract_PIL_image_from_filelike(IMAGE_INPUT), size=(512,512))
-    
-    if HALF:
-        pt_img = extract_pytorch_image_from_PIL_image(pil_image).half().reshape(1,4,512,512).to(DEVICE_NAME)
-    else:
-        pt_img = extract_pytorch_image_from_PIL_image(pil_image).reshape(1,4,512,512).to(DEVICE_NAME)
+    pt_img = extract_pytorch_image_from_PIL_image(pil_image).reshape(1,4,512,512).to(DEVICE_NAME)
 zero_pose = torch.zeros(1, pose_size, dtype=dtype, device=device)
 
 poser_torch_res = poser.pose(pt_img, zero_pose)
 
 
+def torch_srgb_to_linear(x: torch.Tensor):
+    x = torch.clip(x, 0.0, 1.0)
+    return torch.where(torch.le(x, 0.04045), x / 12.92, ((x + 0.055) / 1.055) ** 2.4)
 
+
+def torch_linear_to_srgb(x):
+    x = torch.clip(x, 0.0, 1.0)
+    return torch.where(torch.le(x, 0.003130804953560372), x * 12.92, 1.055 * (x ** (1.0 / 2.4)) - 0.055)
+
+def numpy_linear_to_srgb(x):
+    x = np.clip(x, 0.0, 1.0)
+    return np.where(x <= 0.003130804953560372, x * 12.92, 1.055 * (x ** (1.0 / 2.4)) - 0.055)
 
 class EyebrowDecomposerWrapper(Module):
     def __init__(self, eyebrow_decomposer_obj):
         super().__init__()
         self.eyebrow_decomposer = eyebrow_decomposer_obj
     def forward(self, image: Tensor, *args) -> List[Tensor]:
+        shapes = image.shape
+        if len(shapes) != 3 or shapes[0] != 512 or shapes[1] != 512 or shapes[2] != 4:
+            raise ValueError('No a proper shape input')
+        image = image.to(dtype)/255.0
+        image[:, :, :3] = torch_srgb_to_linear(image[:, :, :3])
+        image = image[:,:,[2,1,0,3]].clip(0.0, 1.0)
+        image = image.reshape(512 * 512, 4).transpose(0,1).reshape(1,4,512,512)
+        image = image * 2.0 - 1.0
         cropped = image[:,:, 64:192, 64 + 128:192 + 128].reshape((1,4,128,128))
         decomposer_res = self.eyebrow_decomposer(cropped)
-        return [decomposer_res[3], decomposer_res[0]]
+        return [decomposer_res[3], decomposer_res[0], image.clone()]
 eyebrow_decomposer_wrapper = EyebrowDecomposerWrapper(eyebrow_decomposer).eval()
-eyebrow_decomposer_wrapped_torch_res = eyebrow_decomposer_wrapper(pt_img)
+cv_img = torch.from_numpy(cv2.imread(IMAGE_INPUT, cv2.IMREAD_UNCHANGED)).to(device)
+eyebrow_decomposer_wrapped_torch_res = eyebrow_decomposer_wrapper(cv_img)
+print('diff is:', ((eyebrow_decomposer_wrapped_torch_res[2] - pt_img) **2).mean())
 
 EYEBROW_DECOMPOSER_INPUT_LIST = ['input_image']
-EYEBROW_DECOMPOSER_OUTPUT_LIST = ["background_layer", "eyebrow_layer"]
+EYEBROW_DECOMPOSER_OUTPUT_LIST = ["background_layer", "eyebrow_layer", "image_prepared"]
 #Export onnx model finally get a simplified decomposer onnx model
 torch.onnx.export(eyebrow_decomposer_wrapper,               # model being run
-                  pt_img,                         # model input (or a tuple for multiple inputs)
+                  cv_img,                         # model input (or a tuple for multiple inputs)
                   TMP_FILE_WRITE,   # where to save the model (can be a file or file-like object)
                   export_params=True,        # store the trained parameter weights inside the model file
                   opset_version=16,          # the ONNX version to export the model to
@@ -117,7 +148,7 @@ else:
 
 
 
-EYEBROW_MORPHING_COMBINER_INPUT_LIST = ['input_image','eyebrow_background_layer', "eyebrow_layer", 'eyebrow_pose']
+EYEBROW_MORPHING_COMBINER_INPUT_LIST = ['image_prepared','eyebrow_background_layer', "eyebrow_layer", 'eyebrow_pose']
 EYEBROW_MORPHING_COMBINER_OUTPUT_LIST = ['eyebrow_image']  
 EYEBROW_POSE_SHAPE = (1, 12)
 eyebrow_pose_zero = torch.zeros(EYEBROW_POSE_SHAPE, dtype=dtype, device=device)
@@ -132,9 +163,9 @@ class EyebrowMorphingCombinerWrapper(Module):
         im_morpher_crop[:, :, 32:32 + 128, 32:32 + 128] = self.eyebrow_morphing_combiner(background_layer, eyebrow_layer, pose)[2]
         return im_morpher_crop
 eyebrow_morphing_combiner_wrapped = EyebrowMorphingCombinerWrapper(eyebrow_morphing_combiner).eval()
-eyebrow_morphing_combiner_wrapped_torch_res = eyebrow_morphing_combiner_wrapped(pt_img, eyebrow_decomposer_wrapped_torch_res[0], 
+eyebrow_morphing_combiner_wrapped_torch_res = eyebrow_morphing_combiner_wrapped(eyebrow_decomposer_wrapped_torch_res[2], eyebrow_decomposer_wrapped_torch_res[0], 
                                                                                 eyebrow_decomposer_wrapped_torch_res[1], eyebrow_pose_zero)
-input_tuple = (pt_img, eyebrow_decomposer_wrapped_torch_res[0], eyebrow_decomposer_wrapped_torch_res[1], eyebrow_pose_zero)
+input_tuple = (eyebrow_decomposer_wrapped_torch_res[2], eyebrow_decomposer_wrapped_torch_res[0], eyebrow_decomposer_wrapped_torch_res[1], eyebrow_pose_zero)
 torch.onnx.export(eyebrow_morphing_combiner_wrapped,               # model being run
                   input_tuple,                         # model input (or a tuple for multiple inputs)
                   TMP_FILE_WRITE,   # where to save the model (can be a file or file-like object)
@@ -166,11 +197,11 @@ class FaceMorpherWrapped(Module):
         face_morphed_half = interpolate(face_morphed_full, size=(256, 256), mode='bilinear', align_corners=False)
         return [face_morphed_full, face_morphed_half]
 face_morpher_wrapped = FaceMorpherWrapped(face_morpher).eval()
-face_morpher_wrapped_torch_res = face_morpher_wrapped(pt_img, eyebrow_morphing_combiner_wrapped_torch_res, face_pose_zero) 
+face_morpher_wrapped_torch_res = face_morpher_wrapped(eyebrow_decomposer_wrapped_torch_res[2], eyebrow_morphing_combiner_wrapped_torch_res, face_pose_zero) 
 
 FACE_MORPHER_OUTPUT_LIST = ['face_morphed_full', 'face_morphed_half']
-FACE_MORPHER_INPUT_LIST = ['input_image', 'im_morpher_crop', 'face_pose']
-input_tuple = (pt_img, eyebrow_morphing_combiner_wrapped_torch_res, face_pose_zero)
+FACE_MORPHER_INPUT_LIST = ['image_prepared', 'im_morpher_crop', 'face_pose']
+input_tuple = (eyebrow_decomposer_wrapped_torch_res[2], eyebrow_morphing_combiner_wrapped_torch_res, face_pose_zero)
 
 torch.onnx.export(face_morpher_wrapped,               # model being run
                   input_tuple,                         # model input (or a tuple for multiple inputs)
@@ -192,12 +223,12 @@ else:
 # Try to split out the Encoder part of the mopher model
 FACE_MORPHER_ENCODER = join(TMP_DIR, 'morpher_encoder.onnx')
 onnx.utils.extract_model(join(TMP_DIR, 'morpher_tmp.onnx'), FACE_MORPHER_ENCODER, ['im_morpher_crop'], 
-                         ['/face_morpher/downsample_blocks.3/downsample_blocks.3.2/Relu_output_0'])
+                         [CUT_OUTPUT])
 onnx.checker.check_model(onnx.load(FACE_MORPHER_ENCODER))
 FACE_MORPHER_NEW = join(MODEL_DIR, 'morpher.onnx')
 onnx.utils.extract_model(join(TMP_DIR, 'morpher_tmp.onnx'), FACE_MORPHER_NEW, 
-                         ['input_image','im_morpher_crop','face_pose',
-                          '/face_morpher/downsample_blocks.3/downsample_blocks.3.2/Relu_output_0'], 
+                         ['image_prepared','im_morpher_crop','face_pose',
+                          CUT_OUTPUT], 
                          ['face_morphed_full', 'face_morphed_half'])
 onnx.checker.check_model(onnx.load(FACE_MORPHER_NEW))
 
@@ -210,8 +241,8 @@ eyebrow_combiner_new_model = onnx.compose.merge_models(
     io_map=[("eyebrow_image", "im_morpher_crop")]
 )
 onnx.save(eyebrow_combiner_new_model, TMP_FILE_WRITE)
-onnx.utils.extract_model(TMP_FILE_WRITE, EYEBROW_COMBINER_NEW, ['input_image', 'eyebrow_background_layer', 'eyebrow_layer', 'eyebrow_pose'], 
-                         ['eyebrow_image', '/face_morpher/downsample_blocks.3/downsample_blocks.3.2/Relu_output_0'])
+onnx.utils.extract_model(TMP_FILE_WRITE, EYEBROW_COMBINER_NEW, ['image_prepared', 'eyebrow_background_layer', 'eyebrow_layer', 'eyebrow_pose'], 
+                         ['eyebrow_image', CUT_OUTPUT])
 onnx.checker.check_model(onnx.load(EYEBROW_COMBINER_NEW))
 
 ROTATION_POSE_SHAPE = (1,6)
@@ -250,6 +281,7 @@ if check:
 else:
     print("Simplify error!")
 
+
 class EditorWrapped(Module):
     def __init__(self, editor_obj):
         super().__init__()
@@ -260,14 +292,18 @@ class EditorWrapped(Module):
                 rotated_grid_change: Tensor,
                 pose: Tensor,
                 *args) -> List[Tensor]:
-        return self.editor(morphed_image, rotated_warped_image, rotated_grid_change, pose)[0].half()
+        res = self.editor(morphed_image, rotated_warped_image, rotated_grid_change, pose)[0] / 2.0 + 0.5
+        res[:, :3,:,:] = torch_linear_to_srgb(res[:, :3,:,:])
+        cv_res = res.reshape(4, 512 * 512).transpose(0, 1).reshape(512, 512, 4)
+        cv_res = (cv_res * 255).to(torch.uint8)
+        return [res.float(), cv_res[:,:,[2,1,0,3]]]
 editor_wrapped = EditorWrapped(editor).eval()
 editor_wrapped_torch_res = editor_wrapped(face_morpher_wrapped_torch_res[0], 
                                           rotator_wrapped_torch_res[0], 
                                           rotator_wrapped_torch_res[1], 
                                           rotation_pose_zero)
 
-EDITOR_OUTPUT_LIST = ['result']
+EDITOR_OUTPUT_LIST = ['result', 'cv_result']
 EDITOR_INPUT_LIST = ['morphed_image', 'rotated_warped_image','rotated_grid_change','rotation_pose']
 input_tuple = (face_morpher_wrapped_torch_res[0], 
                           rotator_wrapped_torch_res[0], 
@@ -304,22 +340,24 @@ class RunTest():
         self.rotator_sess = ort.InferenceSession(join(MODEL_DIR, "rotator.onnx"))#, sess_options=sess_options, providers=providers)
         self.editor_sess = ort.InferenceSession(join(MODEL_DIR, "editor.onnx"))#, sess_options=sess_options, providers=providers)
 
-    def run(self, img):
+    def run(self, img, file_path):
         # if img == None:
         #     img = np.random.rand(1, 4, 512, 512).astype(self.dtype) * 2.0 - 1.0
+        img = img.astype(self.dtype)
         self.eyebrow_pose_zero = np.random.rand(1,12).astype(self.dtype)
         self.face_pose_zero = np.random.rand(1,27).astype(self.dtype)
         self.rotation_pose_zero = np.random.rand(1,6).astype(self.dtype)
+        cv_img = cv2.imread(file_path, cv2.IMREAD_UNCHANGED)
 
-        decomposer_res = self.decomposer_sess.run(None, {'input_image':img,})
-        combiner_res = self.combiner_sess.run(None, {'input_image':img,
+        decomposer_res = self.decomposer_sess.run(None, {'input_image':cv_img,})
+        combiner_res = self.combiner_sess.run(None, {'image_prepared':decomposer_res[2],
                                                      'eyebrow_background_layer': decomposer_res[0],
                                                      "eyebrow_layer": decomposer_res[1],
                                                      'eyebrow_pose':self.eyebrow_pose_zero,})
-        morpher_res = self.morpher_sess.run(None, {'input_image':img,
+        morpher_res = self.morpher_sess.run(None, {'image_prepared':decomposer_res[2],
                                                    'im_morpher_crop': combiner_res[0], 
                                                    'face_pose': self.face_pose_zero,
-                                                   '/face_morpher/downsample_blocks.3/downsample_blocks.3.2/Relu_output_0':combiner_res[1]})
+                                                   CUT_OUTPUT:combiner_res[1]})
         rotator_res = self.rotator_sess.run(None, {'face_morphed_half':morpher_res[1], 
                                                    'rotation_pose':self.rotation_pose_zero})
         editor_res = self.editor_sess.run(None, {'morphed_image':morpher_res[0],
@@ -328,18 +366,14 @@ class RunTest():
                                                  'rotation_pose':self.rotation_pose_zero})
         ref = poser.pose(torch.from_numpy(img).to(device), 
                          torch.from_numpy(np.concatenate((self.eyebrow_pose_zero, self.face_pose_zero, self.rotation_pose_zero),axis=1)).to(device))[0]
+        
         def printInfo(a):
             print(a.dtype, a.shape, np.max(a),np.min(a), np.mean(a), np.sum(a))
-        ref_np = ref.cpu().detach().numpy()
+        ref_np = ref.cpu().detach().numpy() /2.0 +0.5
+        ref_np[:3,:,:] = numpy_linear_to_srgb(ref_np[:3,:,:])
         printInfo(editor_res[0][0])
         printInfo(ref_np)
         print("MSE is: ",((editor_res[0] - ref_np) ** 2).mean())
-            # from PIL import Image
-            # def saveImg(path:str, arry):
-            #     resImg = ((arry/2.0 + 0.5)*255).astype('uint8')
-            #     Image.fromarray(resImg).convert('RGB').save(path)
-            # saveImg('test_res.jpg',editor_res[0])
-            # saveImg('ref.jpg', ref_np)
 
 from tqdm import tqdm
 
@@ -347,12 +381,12 @@ t = RunTest()
 def processImages(dir):
     all_inputs = []
     directory = os.fsencode(dir)
-    for file in tqdm(os.listdir(directory)):
+    for file in os.listdir(directory):
         filename = os.fsdecode(file)
         if filename.endswith(".png") or filename.endswith(".png"): 
             pil_image = resize_PIL_image(extract_PIL_image_from_filelike(join(dir, filename)), size=(512,512))
             torch_input_image = extract_pytorch_image_from_PIL_image(pil_image).reshape(1,4,512,512).float().detach().numpy()
-            t.run(torch_input_image)
+            t.run(torch_input_image, join(dir, filename))
 
 
 processImages(join('.','data','images'))

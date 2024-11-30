@@ -6,17 +6,14 @@ import torch.nn.functional as F
 from trt_utils import *
 import sys
 
-dtype = torch.float
-modulo = 128
 
 device = torch.device("cuda", 0)
 model_name = "flownet.pkl"
 image_size = 512
-sharpen_factor = 1.0
 
-
-num_interpo = int(sys.argv[1])
-export_name = sys.argv[2]
+dtype = torch.float if 'fp32' in sys.argv[1] else torch.half
+num_interpo = int(sys.argv[2])
+export_name = sys.argv[3]
 
 
 

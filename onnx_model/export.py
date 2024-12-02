@@ -151,7 +151,7 @@ else:
 EYEBROW_MORPHING_COMBINER_INPUT_LIST = ['image_prepared','eyebrow_background_layer', "eyebrow_layer", 'eyebrow_pose']
 EYEBROW_MORPHING_COMBINER_OUTPUT_LIST = ['eyebrow_image']  
 EYEBROW_POSE_SHAPE = (1, 12)
-eyebrow_pose_zero = torch.zeros(EYEBROW_POSE_SHAPE, dtype=dtype, device=device)
+eyebrow_pose_zero = torch.zeros(EYEBROW_POSE_SHAPE, dtype=torch.float, device=device)
 
 #Build a new eyebrow_morphing_combiner that does cropping
 class EyebrowMorphingCombinerWrapper(Module):
@@ -159,6 +159,7 @@ class EyebrowMorphingCombinerWrapper(Module):
         super().__init__()
         self.eyebrow_morphing_combiner = eyebrow_morphing_combiner_obj
     def forward(self, full_image:Tensor, background_layer: Tensor, eyebrow_layer: Tensor, pose: Tensor, *args) -> Tensor:
+        pose = pose.to(dtype)
         im_morpher_crop = full_image[:, :, 32:32 + 192, (32 + 128):(32 + 192 + 128)].clone()
         im_morpher_crop[:, :, 32:32 + 128, 32:32 + 128] = self.eyebrow_morphing_combiner(background_layer, eyebrow_layer, pose)[2]
         return im_morpher_crop
@@ -185,13 +186,14 @@ else:
 
 #Play with face morpher
 FACE_POSE_SHAPE = (1,27)
-face_pose_zero = torch.zeros(FACE_POSE_SHAPE, dtype=dtype, device=device)
+face_pose_zero = torch.zeros(FACE_POSE_SHAPE, dtype=torch.float, device=device)
 
 class FaceMorpherWrapped(Module):
     def __init__(self, face_morpher_obj):
         super().__init__()
         self.face_morpher = face_morpher_obj
     def forward(self, input_image: Tensor, im_morpher_crop: Tensor, face_pose:Tensor,  *args) -> List[Tensor]:
+        face_pose = face_pose.to(dtype)
         face_morphed_full = input_image.clone()
         face_morphed_full[:, :, 32:32 + 192, 32 + 128:32 + 192 + 128] = self.face_morpher(im_morpher_crop, face_pose)[0]
         face_morphed_half = interpolate(face_morphed_full, size=(256, 256), mode='bilinear', align_corners=False)
@@ -246,13 +248,14 @@ onnx.utils.extract_model(TMP_FILE_WRITE, EYEBROW_COMBINER_NEW, ['image_prepared'
 onnx.checker.check_model(onnx.load(EYEBROW_COMBINER_NEW))
 
 ROTATION_POSE_SHAPE = (1,6)
-rotation_pose_zero = torch.zeros(ROTATION_POSE_SHAPE, dtype=dtype, device=device)
+rotation_pose_zero = torch.zeros(ROTATION_POSE_SHAPE, dtype=torch.float, device=device)
 
 class TwoAlgoFaceBodyRotatorWrapped(Module):
     def __init__(self, two_algo_face_body_rotator_obj):
         super().__init__()
         self.two_algo_face_body_rotator = two_algo_face_body_rotator_obj
     def forward(self, image: Tensor, pose: Tensor, *args) -> List[Tensor]:
+        pose = pose.to(dtype)
         res = self.two_algo_face_body_rotator(image, pose)
         full_warped_image = interpolate(res[1], size=(512, 512), mode='bilinear', align_corners=False)
         full_grid_change = interpolate(res[2], size=(512, 512), mode='bilinear', align_corners=False)
@@ -292,11 +295,13 @@ class EditorWrapped(Module):
                 rotated_grid_change: Tensor,
                 pose: Tensor,
                 *args) -> List[Tensor]:
+        pose = pose.to(dtype)
         res = self.editor(morphed_image, rotated_warped_image, rotated_grid_change, pose)[0] / 2.0 + 0.5
         res[:, :3,:,:] = torch_linear_to_srgb(res[:, :3,:,:])
         cv_res = res.reshape(4, 512 * 512).transpose(0, 1).reshape(512, 512, 4)
+        cv_res = cv_res[:,:,[2,1,0,3]]
         cv_res = (cv_res * 255).to(torch.uint8)
-        return [res.float(), cv_res[:,:,[2,1,0,3]]]
+        return [res.float(), cv_res]
 editor_wrapped = EditorWrapped(editor).eval()
 editor_wrapped_torch_res = editor_wrapped(face_morpher_wrapped_torch_res[0], 
                                           rotator_wrapped_torch_res[0], 
@@ -344,9 +349,9 @@ class RunTest():
         # if img == None:
         #     img = np.random.rand(1, 4, 512, 512).astype(self.dtype) * 2.0 - 1.0
         img = img.astype(self.dtype)
-        self.eyebrow_pose_zero = np.random.rand(1,12).astype(self.dtype)
-        self.face_pose_zero = np.random.rand(1,27).astype(self.dtype)
-        self.rotation_pose_zero = np.random.rand(1,6).astype(self.dtype)
+        self.eyebrow_pose_zero = np.random.rand(1,12).astype(np.float32)
+        self.face_pose_zero = np.random.rand(1,27).astype(np.float32)
+        self.rotation_pose_zero = np.random.rand(1,6).astype(np.float32)
         cv_img = cv2.imread(file_path, cv2.IMREAD_UNCHANGED)
 
         decomposer_res = self.decomposer_sess.run(None, {'input_image':cv_img,})
@@ -365,7 +370,9 @@ class RunTest():
                                                  'rotated_grid_change': rotator_res[1], 
                                                  'rotation_pose':self.rotation_pose_zero})
         ref = poser.pose(torch.from_numpy(img).to(device), 
-                         torch.from_numpy(np.concatenate((self.eyebrow_pose_zero, self.face_pose_zero, self.rotation_pose_zero),axis=1)).to(device))[0]
+                         torch.from_numpy(np.concatenate((self.eyebrow_pose_zero.astype(self.dtype), 
+                                                          self.face_pose_zero.astype(self.dtype), 
+                                                          self.rotation_pose_zero.astype(self.dtype)),axis=1)).to(device))[0]
         
         def printInfo(a):
             print(a.dtype, a.shape, np.max(a),np.min(a), np.mean(a), np.sum(a))

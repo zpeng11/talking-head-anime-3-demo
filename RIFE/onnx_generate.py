@@ -5,10 +5,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 from trt_utils import *
 import sys
-
+import os
+import cv2
+sys.path.append(os.getcwd())
 
 device = torch.device("cuda", 0)
-model_name = "flownet.pkl"
+model_name = os.path.join('RIFE', "flownet.pkl") 
 image_size = 512
 
 dtype = torch.float if 'fp32' in sys.argv[1] else torch.half
@@ -85,12 +87,19 @@ class RIFEWrapped(nn.Module):
 
 
     def forward(self, tha_img_0, tha_img_1):
-        if dtype == torch.float:
-            img_0 = tha_img_0.float()/2.0 + 0.5
-            img_1 = tha_img_1.float()/2.0 + 0.5
-        else:
-            img_0 = tha_img_0 /2.0 + 0.5
-            img_1 = tha_img_1 /2.0 + 0.5
+        #input image with opencv style input, shape(512,512,4) range(0, 255), dtype uint8 BGRA layout
+        if tha_img_0.dtype != torch.uint8 or tha_img_1.dtype != torch.uint8:
+            raise ValueError('Data type error!')
+        shapes = tha_img_0.shape
+        if len(shapes) != 3 or shapes[0] != 512 or shapes[1] != 512 or shapes[2] != 4:
+            raise ValueError('No a proper shape input')
+        shapes = tha_img_1.shape
+        if len(shapes) != 3 or shapes[0] != 512 or shapes[1] != 512 or shapes[2] != 4:
+            raise ValueError('No a proper shape input')
+
+        # BGRA to RGBA, uint8 to float/half, range to (0.0,1.0), shape to (1,4,512,512)
+        img_0 = (tha_img_0[:,:, [2,1,0,3]].to(dtype) / 255.0).reshape(512 * 512, 4).transpose(0,1).reshape(1,4, 512,512)
+        img_1 = (tha_img_1[:,:, [2,1,0,3]].to(dtype) / 255.0).reshape(512 * 512, 4).transpose(0,1).reshape(1,4, 512,512)
 
         interpo_res = [torch.zeros((1,4,512, 512), dtype=dtype, device = device) for i in range(num_interpo - 1)]
 
@@ -107,31 +116,21 @@ class RIFEWrapped(nn.Module):
         ret_res = []
 
         for i in range(num_interpo - 1):
-            interpo_res[i][:, :3, :, :] = torch_linear_to_srgb(self.flownet(img_0[:, :3, :, :], 
-                                                                            img_1[:, :3, :, :], 
-                                                                            self.timesteps[i], 
-                                                                            self.tenFlow_div, 
-                                                                            self.backwarp_tenGrid, 
-                                                                            encoded_0, 
-                                                                            encoded_1))
-            res = interpo_res[i].reshape(4, 512 * 512)
-            res = torch.transpose(res, 0, 1).reshape(512, 512, 4)[:, :, [2,1,0,3]] * 255.0
-            res = torch.clip(res, 0.0, 255.0)
-            if dtype == torch.float:
-                ret_res.append(res.float())
-            else:
-                ret_res.append(res)
+            interpo_res[i][:, :3, :, :] = self.flownet(img_0[:, :3, :, :], 
+                                                        img_1[:, :3, :, :], 
+                                                        self.timesteps[i], 
+                                                        self.tenFlow_div, 
+                                                        self.backwarp_tenGrid, 
+                                                        encoded_0, 
+                                                        encoded_1)
+            
+            res = interpo_res[i].reshape(4, 512 * 512).transpose(0, 1).reshape(512, 512, 4) #Reshape back to (512, 512, 4)
+            res = res[:, :, [2,1,0,3]] #RGBA back to BGRA
+            res = torch.clip(res * 255.0, 0.0, 255.0) #range back to (0.0, 255.0)
+            ret_res.append(res.to(torch.uint8)) #dtype back to uint8
 
         #Append latest tha result
-        tha_res = img_1.clone()
-        tha_res[:,:3,:,:] = torch_linear_to_srgb(img_1[:,:3,:,:])
-        tha_res = tha_res.reshape(4, 512 * 512)
-        tha_res = torch.transpose(tha_res, 0, 1).reshape(512, 512, 4)[:, :, [2,1,0,3]] * 255.0
-        tha_res = torch.clip(tha_res, 0.0, 255.0)
-        if dtype == torch.float:
-            ret_res.append(tha_res.float())
-        else:
-            ret_res.append(tha_res)
+        ret_res.append(tha_img_1)
 
         return ret_res
     
@@ -142,8 +141,8 @@ rife = RIFEWrapped(flownet, encoder).eval()
 
 
 
-img_0 = torch.rand((1,4,image_size,image_size), dtype=torch.half, device=device)
-img_1 = torch.rand((1,4,image_size,image_size), dtype=torch.half, device=device)
+img_0 = (torch.rand((image_size,image_size, 4), device=device) * 255.0).to(torch.uint8)
+img_1 = (torch.rand((image_size,image_size, 4), device=device) * 255.0).to(torch.uint8)
 input_list = ['tha_img_0', 'tha_img_1']
 
 output_list =[]
@@ -171,6 +170,7 @@ if check:
     onnx.save(onnx_model_sim, export_name+".onnx")
 else:
     raise ValueError("Simplify error")
+
 
 
 # convert('.','.',export_name, 'fp16')

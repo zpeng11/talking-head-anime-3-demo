@@ -98,8 +98,8 @@ class RIFEWrapped(nn.Module):
             raise ValueError('No a proper shape input')
 
         # BGRA to RGBA, uint8 to float/half, range to (0.0,1.0), shape to (1,4,512,512)
-        img_0 = (tha_img_0[:,:, [2,1,0,3]].to(dtype) / 255.0).reshape(512 * 512, 4).transpose(0,1).reshape(1,4, 512,512)
-        img_1 = (tha_img_1[:,:, [2,1,0,3]].to(dtype) / 255.0).reshape(512 * 512, 4).transpose(0,1).reshape(1,4, 512,512)
+        img_0 = (tha_img_0.to(dtype)[:,:, [2,1,0,3]] / 255.0).reshape(512 * 512, 4).transpose(0,1).reshape(1,4, 512,512)
+        img_1 = (tha_img_1.to(dtype)[:,:, [2,1,0,3]] / 255.0).reshape(512 * 512, 4).transpose(0,1).reshape(1,4, 512,512)
 
         interpo_res = [torch.zeros((1,4,512, 512), dtype=dtype, device = device) for i in range(num_interpo - 1)]
 

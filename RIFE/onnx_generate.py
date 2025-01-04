@@ -11,11 +11,14 @@ sys.path.append(os.getcwd())
 
 device = torch.device("cuda", 0)
 model_name = os.path.join('RIFE', "flownet.pkl") 
-image_size = 512
+
 
 dtype = torch.float if 'fp32' in sys.argv[1] else torch.half
 num_interpo = int(sys.argv[2])
 export_name = sys.argv[3]
+image_size = int(sys.argv[4])
+
+image_size_alpha = 256
 
 
 
@@ -52,24 +55,6 @@ def init_module(
 
 
 
-pw = image_size
-ph = image_size
-timesteps = [torch.full([1, 1, ph, pw], float(1+i)/float(num_interpo), dtype=dtype, device=device) for i in range(num_interpo - 1)]
-timestep1 = torch.full([1, 1, ph, pw], 1.0/6.0, dtype=dtype, device=device)
-timestep2 = torch.full([1, 1, ph, pw], 2.0/6.0, dtype=dtype, device=device)
-timestep3 = torch.full([1, 1, ph, pw], 3.0/6.0, dtype=dtype, device=device)
-timestep4 = torch.full([1, 1, ph, pw], 4.0/6.0, dtype=dtype, device=device)
-timestep5 = torch.full([1, 1, ph, pw], 5.0/6.0, dtype=dtype, device=device)
-tenFlow_div = torch.tensor([(pw - 1.0) / 2.0, (ph - 1.0) / 2.0], dtype=torch.float, device=device)
-tenHorizontal = torch.linspace(-1.0, 1.0, pw, dtype=torch.float, device=device)
-tenHorizontal = tenHorizontal.view(1, 1, 1, pw).expand(-1, -1, ph, -1)
-tenVertical = torch.linspace(-1.0, 1.0, ph, dtype=torch.float, device=device)
-tenVertical = tenVertical.view(1, 1, ph, 1).expand(-1, -1, -1, pw)
-backwarp_tenGrid = torch.cat([tenHorizontal, tenVertical], 1)
-
-def torch_linear_to_srgb(x):
-    x = torch.clip(x, 0.0, 1.0)
-    return torch.where(torch.le(x, 0.003130804953560372), x * 12.92, 1.055 * (x ** (1.0 / 2.4)) - 0.055)
 
 class RIFEWrapped(nn.Module):
     def __init__(self, flownet, encoder):
@@ -77,7 +62,7 @@ class RIFEWrapped(nn.Module):
         self.encoder = encoder
         self.flownet = flownet
 
-        self.timesteps = [torch.full([1, 1, ph, pw], float(1+i)/float(num_interpo), dtype=dtype, device=device) for i in range(num_interpo - 1)]
+        self.timesteps = [torch.full([1, 1, image_size, image_size], float(1+i)/float(num_interpo), dtype=dtype, device=device) for i in range(num_interpo - 1)]
         self.tenFlow_div = torch.tensor([(image_size - 1.0) / 2.0, (image_size - 1.0) / 2.0], dtype=torch.float, device=device)
         tenHorizontal = torch.linspace(-1.0, 1.0, image_size, dtype=torch.float, device=device)
         tenHorizontal = tenHorizontal.view(1, 1, 1, image_size).expand(-1, -1, image_size, -1)
@@ -85,33 +70,44 @@ class RIFEWrapped(nn.Module):
         tenVertical = tenVertical.view(1, 1, image_size, 1).expand(-1, -1, -1, image_size)
         self.backwarp_tenGrid = torch.cat([tenHorizontal, tenVertical], 1)
 
+        self.timesteps_alpha = [torch.full([1, 1, image_size_alpha, image_size_alpha], float(1+i)/float(num_interpo), dtype=dtype, device=device) for i in range(num_interpo - 1)]
+        self.tenFlow_div_alpha = torch.tensor([(image_size_alpha - 1.0) / 2.0, (image_size_alpha - 1.0) / 2.0], dtype=torch.float, device=device)
+        tenHorizontal_alpha = torch.linspace(-1.0, 1.0, image_size_alpha, dtype=torch.float, device=device)
+        tenHorizontal_alpha = tenHorizontal_alpha.view(1, 1, 1, image_size_alpha).expand(-1, -1, image_size_alpha, -1)
+        tenVertical_alpha = torch.linspace(-1.0, 1.0, image_size_alpha, dtype=torch.float, device=device)
+        tenVertical_alpha = tenVertical_alpha.view(1, 1, image_size_alpha, 1).expand(-1, -1, -1, image_size_alpha)
+        self.backwarp_tenGrid_alpha = torch.cat([tenHorizontal_alpha, tenVertical_alpha], 1)
+
+
 
     def forward(self, tha_img_0, tha_img_1):
-        #input image with opencv style input, shape(512,512,4) range(0, 255), dtype uint8 BGRA layout
+        #input image with opencv style input, shape(image_size,image_size,4) range(0, 255), dtype uint8 BGRA layout
         if tha_img_0.dtype != torch.uint8 or tha_img_1.dtype != torch.uint8:
             raise ValueError('Data type error!')
         shapes = tha_img_0.shape
-        if len(shapes) != 3 or shapes[0] != 512 or shapes[1] != 512 or shapes[2] != 4:
+        if len(shapes) != 3 or shapes[0] != image_size or shapes[1] != image_size or shapes[2] != 4:
             raise ValueError('No a proper shape input')
         shapes = tha_img_1.shape
-        if len(shapes) != 3 or shapes[0] != 512 or shapes[1] != 512 or shapes[2] != 4:
+        if len(shapes) != 3 or shapes[0] != image_size or shapes[1] != image_size or shapes[2] != 4:
             raise ValueError('No a proper shape input')
 
-        # BGRA to RGBA, uint8 to float/half, range to (0.0,1.0), shape to (1,4,512,512)
-        img_0 = (tha_img_0.to(dtype)[:,:, [2,1,0,3]] / 255.0).reshape(512 * 512, 4).transpose(0,1).reshape(1,4, 512,512)
-        img_1 = (tha_img_1.to(dtype)[:,:, [2,1,0,3]] / 255.0).reshape(512 * 512, 4).transpose(0,1).reshape(1,4, 512,512)
+        # BGRA to RGBA, uint8 to float/half, range to (0.0,1.0), shape to (1,4,image_size,image_size)
+        img_0 = (tha_img_0.to(dtype)[:,:, [2,1,0,3]] / 255.0).reshape(image_size * image_size, 4).transpose(0,1).reshape(1,4, image_size,image_size)
+        img_1 = (tha_img_1.to(dtype)[:,:, [2,1,0,3]] / 255.0).reshape(image_size * image_size, 4).transpose(0,1).reshape(1,4, image_size,image_size)
 
-        interpo_res = [torch.zeros((1,4,512, 512), dtype=dtype, device = device) for i in range(num_interpo - 1)]
+        alpha_chan_0 = torch.nn.functional.interpolate(img_0[:, 3, :, :].unsqueeze(0), (image_size_alpha,image_size_alpha), mode='bilinear')
+        alpha_chan_1 = torch.nn.functional.interpolate(img_1[:, 3, :, :].unsqueeze(0), (image_size_alpha,image_size_alpha), mode='bilinear')
+        img_0_alpha = torch.concat([alpha_chan_0, alpha_chan_0, alpha_chan_0], 1)
+        img_1_alpha = torch.concat([alpha_chan_1, alpha_chan_1, alpha_chan_1], 1)
 
-        for i in range(len(interpo_res)):
-            if i == 0:
-                interpo_res[i][:, 3, :, :] = img_0[:,3,:,:]
-            else:
-                interpo_res[i][:, 3, :, :] = img_1[:,3,:,:]
+        interpo_res = [torch.zeros((1,4,image_size, image_size), dtype=dtype, device = device) for i in range(num_interpo - 1)]
 
 
         encoded_0 = self.encoder(img_0[:, :3, :, :])
         encoded_1 = self.encoder(img_1[:, :3, :, :])
+
+        encoded_0_alpha = self.encoder(img_0_alpha)
+        encoded_1_alpha = self.encoder(img_1_alpha)
 
         ret_res = []
 
@@ -124,13 +120,28 @@ class RIFEWrapped(nn.Module):
                                                         encoded_0, 
                                                         encoded_1)
             
-            res = interpo_res[i].reshape(4, 512 * 512).transpose(0, 1).reshape(512, 512, 4) #Reshape back to (512, 512, 4)
+
+            alpha_interpo_img = self.flownet(img_0_alpha[:, :3, :, :], 
+                                            img_1_alpha[:, :3, :, :], 
+                                            self.timesteps_alpha[i], 
+                                            self.tenFlow_div_alpha, 
+                                            self.backwarp_tenGrid_alpha, 
+                                            encoded_0_alpha, 
+                                            encoded_1_alpha)
+            interpo_res[i][:, 3, :, :] = torch.nn.functional.interpolate(alpha_interpo_img[:,0,:,:].unsqueeze(0), (image_size, image_size), mode='bilinear')
+
+            res = interpo_res[i].reshape(4, image_size * image_size).transpose(0, 1).reshape(image_size, image_size, 4) #Reshape back to (image_size, image_size, 4)
             res = res[:, :, [2,1,0,3]] #RGBA back to BGRA
             res = torch.clip(res * 255.0, 0.0, 255.0) #range back to (0.0, 255.0)
             ret_res.append(res.to(torch.uint8)) #dtype back to uint8
 
         #Append latest tha result
-        ret_res.append(tha_img_1)
+        img_1[:,3,:,:] = torch.nn.functional.interpolate(torch.nn.functional.interpolate(img_1[:,3,:,:].unsqueeze(0), (image_size_alpha,image_size_alpha), mode='bilinear'),
+                                                          (image_size,image_size), mode='bilinear')
+        res = img_1.reshape(4, image_size * image_size).transpose(0, 1).reshape(image_size, image_size, 4)
+        res = res[:, :, [2,1,0,3]] #RGBA back to BGRA
+        res = torch.clip(res * 255.0, 0.0, 255.0) #range back to (0.0, 255.0)
+        ret_res.append(res.to(torch.uint8)) #dtype back to uint8
 
         return ret_res
     

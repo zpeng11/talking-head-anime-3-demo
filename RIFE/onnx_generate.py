@@ -16,9 +16,9 @@ model_name = os.path.join('RIFE', "flownet.pkl")
 dtype = torch.float if 'fp32' in sys.argv[1] else torch.half
 num_interpo = int(sys.argv[2])
 export_name = sys.argv[3]
-image_size = int(sys.argv[4])
+image_size = 512
 
-image_size_alpha = 256
+image_slice = 256
 
 
 
@@ -62,22 +62,13 @@ class RIFEWrapped(nn.Module):
         self.encoder = encoder
         self.flownet = flownet
 
-        self.timesteps = [torch.full([1, 1, image_size, image_size], float(1+i)/float(num_interpo), dtype=dtype, device=device) for i in range(num_interpo - 1)]
-        self.tenFlow_div = torch.tensor([(image_size - 1.0) / 2.0, (image_size - 1.0) / 2.0], dtype=torch.float, device=device)
-        tenHorizontal = torch.linspace(-1.0, 1.0, image_size, dtype=torch.float, device=device)
-        tenHorizontal = tenHorizontal.view(1, 1, 1, image_size).expand(-1, -1, image_size, -1)
-        tenVertical = torch.linspace(-1.0, 1.0, image_size, dtype=torch.float, device=device)
-        tenVertical = tenVertical.view(1, 1, image_size, 1).expand(-1, -1, -1, image_size)
+        self.timesteps = [torch.full([4, 1, image_slice, image_slice], float(1+i)/float(num_interpo), dtype=dtype, device=device) for i in range(num_interpo - 1)]
+        self.tenFlow_div = torch.tensor([(image_slice - 1.0) / 2.0, (image_slice - 1.0) / 2.0], dtype=torch.float, device=device)
+        tenHorizontal = torch.linspace(-1.0, 1.0, image_slice, dtype=torch.float, device=device)
+        tenHorizontal = tenHorizontal.view(1, 1, 1, image_slice).expand(-1, -1, image_slice, -1)
+        tenVertical = torch.linspace(-1.0, 1.0, image_slice, dtype=torch.float, device=device)
+        tenVertical = tenVertical.view(1, 1, image_slice, 1).expand(-1, -1, -1, image_slice)
         self.backwarp_tenGrid = torch.cat([tenHorizontal, tenVertical], 1)
-
-        self.timesteps_alpha = [torch.full([1, 1, image_size_alpha, image_size_alpha], float(1+i)/float(num_interpo), dtype=dtype, device=device) for i in range(num_interpo - 1)]
-        self.tenFlow_div_alpha = torch.tensor([(image_size_alpha - 1.0) / 2.0, (image_size_alpha - 1.0) / 2.0], dtype=torch.float, device=device)
-        tenHorizontal_alpha = torch.linspace(-1.0, 1.0, image_size_alpha, dtype=torch.float, device=device)
-        tenHorizontal_alpha = tenHorizontal_alpha.view(1, 1, 1, image_size_alpha).expand(-1, -1, image_size_alpha, -1)
-        tenVertical_alpha = torch.linspace(-1.0, 1.0, image_size_alpha, dtype=torch.float, device=device)
-        tenVertical_alpha = tenVertical_alpha.view(1, 1, image_size_alpha, 1).expand(-1, -1, -1, image_size_alpha)
-        self.backwarp_tenGrid_alpha = torch.cat([tenHorizontal_alpha, tenVertical_alpha], 1)
-
 
 
     def forward(self, tha_img_0, tha_img_1):
@@ -95,40 +86,41 @@ class RIFEWrapped(nn.Module):
         img_0 = (tha_img_0.to(dtype)[:,:, [2,1,0,3]] / 255.0).reshape(image_size * image_size, 4).transpose(0,1).reshape(1,4, image_size,image_size)
         img_1 = (tha_img_1.to(dtype)[:,:, [2,1,0,3]] / 255.0).reshape(image_size * image_size, 4).transpose(0,1).reshape(1,4, image_size,image_size)
 
-        alpha_chan_0 = torch.nn.functional.interpolate(img_0[:, 3, :, :].unsqueeze(0), (image_size_alpha,image_size_alpha), mode='bilinear')
-        alpha_chan_1 = torch.nn.functional.interpolate(img_1[:, 3, :, :].unsqueeze(0), (image_size_alpha,image_size_alpha), mode='bilinear')
-        img_0_alpha = torch.concat([alpha_chan_0, alpha_chan_0, alpha_chan_0], 1)
-        img_1_alpha = torch.concat([alpha_chan_1, alpha_chan_1, alpha_chan_1], 1)
+        img_0_slice_a = img_0[:,:3,0:256,128:128+256] 
+        img_1_slice_a = img_1[:,:3,0:256,128:128+256]
+        img_0_slice_b = img_0[:,:3,256:512,0:256] 
+        img_1_slice_b = img_1[:,:3,256:512,0:256]
+        img_0_slice_c = img_0[:,:3,256:512,256:512] 
+        img_1_slice_c = img_1[:,:3,256:512,256:512]
+        img_0_slice_d = torch.concat([img_0[:,3,0:256,128:128+256].unsqueeze(0), img_0[:,3,256:512,0:256].unsqueeze(0), img_0[:,3,256:512,256:512].unsqueeze(0)], dim = 1) 
+        img_1_slice_d = torch.concat([img_1[:,3,0:256,128:128+256].unsqueeze(0), img_1[:,3,256:512,0:256].unsqueeze(0), img_1[:,3,256:512,256:512].unsqueeze(0)], dim = 1)
 
-        interpo_res = [torch.zeros((1,4,image_size, image_size), dtype=dtype, device = device) for i in range(num_interpo - 1)]
+        img_0_slices = torch.concat([img_0_slice_a, img_0_slice_b, img_0_slice_c, img_0_slice_d], dim=0)
+        img_1_slices = torch.concat([img_1_slice_a, img_1_slice_b, img_1_slice_c, img_1_slice_d], dim=0)
+        img_0_slices_encoded = self.encoder(img_0_slices)
+        img_1_slices_encoded = self.encoder(img_1_slices)
 
 
-        encoded_0 = self.encoder(img_0[:, :3, :, :])
-        encoded_1 = self.encoder(img_1[:, :3, :, :])
-
-        encoded_0_alpha = self.encoder(img_0_alpha)
-        encoded_1_alpha = self.encoder(img_1_alpha)
+        interpo_res = [img_1.clone() for i in range(num_interpo - 1)]
 
         ret_res = []
 
         for i in range(num_interpo - 1):
-            interpo_res[i][:, :3, :, :] = self.flownet(img_0[:, :3, :, :], 
-                                                        img_1[:, :3, :, :], 
-                                                        self.timesteps[i], 
-                                                        self.tenFlow_div, 
-                                                        self.backwarp_tenGrid, 
-                                                        encoded_0, 
-                                                        encoded_1)
+            rife_res = self.flownet(img_0_slices, 
+                                    img_1_slices, 
+                                    self.timesteps[i], 
+                                    self.tenFlow_div, 
+                                    self.backwarp_tenGrid, 
+                                    img_0_slices_encoded, 
+                                    img_1_slices_encoded)
             
+            interpo_res[i][:,:3,0:256,128:128+256] = rife_res[0,:,:,:]
+            interpo_res[i][:,:3,256:512,0:256] = rife_res[1,:,:,:]
+            interpo_res[i][:,:3,256:512,256:512] = rife_res[2,:,:,:]
+            interpo_res[i][:,3,0:256,128:128+256] = rife_res[3,0,:,:]
+            interpo_res[i][:,3,256:512,0:256] = rife_res[3,1,:,:]
+            interpo_res[i][:,3,256:512,256:512] = rife_res[3,2,:,:]
 
-            alpha_interpo_img = self.flownet(img_0_alpha[:, :3, :, :], 
-                                            img_1_alpha[:, :3, :, :], 
-                                            self.timesteps_alpha[i], 
-                                            self.tenFlow_div_alpha, 
-                                            self.backwarp_tenGrid_alpha, 
-                                            encoded_0_alpha, 
-                                            encoded_1_alpha)
-            interpo_res[i][:, 3, :, :] = torch.nn.functional.interpolate(alpha_interpo_img[:,0,:,:].unsqueeze(0), (image_size, image_size), mode='bilinear')
 
             res = interpo_res[i].reshape(4, image_size * image_size).transpose(0, 1).reshape(image_size, image_size, 4) #Reshape back to (image_size, image_size, 4)
             res = res[:, :, [2,1,0,3]] #RGBA back to BGRA
@@ -136,12 +128,7 @@ class RIFEWrapped(nn.Module):
             ret_res.append(res.to(torch.uint8)) #dtype back to uint8
 
         #Append latest tha result
-        img_1[:,3,:,:] = torch.nn.functional.interpolate(torch.nn.functional.interpolate(img_1[:,3,:,:].unsqueeze(0), (image_size_alpha,image_size_alpha), mode='bilinear'),
-                                                          (image_size,image_size), mode='bilinear')
-        res = img_1.reshape(4, image_size * image_size).transpose(0, 1).reshape(image_size, image_size, 4)
-        res = res[:, :, [2,1,0,3]] #RGBA back to BGRA
-        res = torch.clip(res * 255.0, 0.0, 255.0) #range back to (0.0, 255.0)
-        ret_res.append(res.to(torch.uint8)) #dtype back to uint8
+        ret_res.append(tha_img_1) #dtype back to uint8
 
         return ret_res
     

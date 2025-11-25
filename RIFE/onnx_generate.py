@@ -3,13 +3,11 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from trt_utils import *
 import sys
 import os
-import cv2
 sys.path.append(os.getcwd())
 
-device = torch.device("cuda", 0)
+device = 'cpu'
 model_name = os.path.join('RIFE', "flownet.pkl") 
 
 
@@ -62,7 +60,7 @@ class RIFEWrapped(nn.Module):
         self.encoder = encoder
         self.flownet = flownet
 
-        self.timesteps = [torch.full([4, 1, image_slice, image_slice], float(1+i)/float(num_interpo), dtype=dtype, device=device) for i in range(num_interpo - 1)]
+        self.timesteps = torch.cat([torch.full([4, 1, image_slice, image_slice], float(1+i)/float(num_interpo), dtype=dtype, device=device) for i in range(num_interpo - 1)], dim=0)
         self.tenFlow_div = torch.tensor([(image_slice - 1.0) / 2.0, (image_slice - 1.0) / 2.0], dtype=torch.float, device=device)
         tenHorizontal = torch.linspace(-1.0, 1.0, image_slice, dtype=torch.float, device=device)
         tenHorizontal = tenHorizontal.view(1, 1, 1, image_slice).expand(-1, -1, image_slice, -1)
@@ -95,31 +93,41 @@ class RIFEWrapped(nn.Module):
         img_0_slice_d = torch.concat([img_0[:,3,0:256,128:128+256].unsqueeze(0), img_0[:,3,256:512,0:256].unsqueeze(0), img_0[:,3,256:512,256:512].unsqueeze(0)], dim = 1) 
         img_1_slice_d = torch.concat([img_1[:,3,0:256,128:128+256].unsqueeze(0), img_1[:,3,256:512,0:256].unsqueeze(0), img_1[:,3,256:512,256:512].unsqueeze(0)], dim = 1)
 
-        img_0_slices = torch.concat([img_0_slice_a, img_0_slice_b, img_0_slice_c, img_0_slice_d], dim=0)
-        img_1_slices = torch.concat([img_1_slice_a, img_1_slice_b, img_1_slice_c, img_1_slice_d], dim=0)
-        img_0_slices_encoded = self.encoder(img_0_slices)
-        img_1_slices_encoded = self.encoder(img_1_slices)
+        img_0_1_slices = torch.concat([img_0_slice_a, img_0_slice_b, img_0_slice_c, img_0_slice_d, img_1_slice_a, img_1_slice_b, img_1_slice_c, img_1_slice_d], dim=0)
+        img_0_1_slices_encoded = self.encoder(img_0_1_slices)
+        img_0_slices = []
+        img_1_slices = []
+        img_0_slices_encoded = []
+        img_1_slices_encoded = []
+        for i in range(num_interpo - 1):
+            img_0_slices.append(img_0_1_slices[:4,:,:,:])
+            img_1_slices.append(img_0_1_slices[4:8,:,:,:])
+            img_0_slices_encoded.append(img_0_1_slices_encoded[:4,:,:,:])
+            img_1_slices_encoded.append(img_0_1_slices_encoded[4:8,:,:,:])
+        img_0_slices = torch.concat(img_0_slices, dim=0)
+        img_1_slices = torch.concat(img_1_slices, dim=0)
+        img_0_slices_encoded = torch.concat(img_0_slices_encoded, dim=0)
+        img_1_slices_encoded = torch.concat(img_1_slices_encoded, dim=0)
 
 
         interpo_res = [img_1.clone() for i in range(num_interpo - 1)]
 
+        rife_res = self.flownet(img_0_slices, 
+                                img_1_slices, 
+                                self.timesteps, 
+                                self.tenFlow_div, 
+                                self.backwarp_tenGrid, 
+                                img_0_slices_encoded, 
+                                img_1_slices_encoded)
+        # return rife_res
         ret_res = []
-
         for i in range(num_interpo - 1):
-            rife_res = self.flownet(img_0_slices, 
-                                    img_1_slices, 
-                                    self.timesteps[i], 
-                                    self.tenFlow_div, 
-                                    self.backwarp_tenGrid, 
-                                    img_0_slices_encoded, 
-                                    img_1_slices_encoded)
-            
-            interpo_res[i][:,:3,0:256,128:128+256] = rife_res[0,:,:,:]
-            interpo_res[i][:,:3,256:512,0:256] = rife_res[1,:,:,:]
-            interpo_res[i][:,:3,256:512,256:512] = rife_res[2,:,:,:]
-            interpo_res[i][:,3,0:256,128:128+256] = rife_res[3,0,:,:]
-            interpo_res[i][:,3,256:512,0:256] = rife_res[3,1,:,:]
-            interpo_res[i][:,3,256:512,256:512] = rife_res[3,2,:,:]
+            interpo_res[i][:,:3,0:256,128:128+256] = rife_res[0 + 4 * i ,:,:,:]
+            interpo_res[i][:,:3,256:512,0:256] = rife_res[1 + 4 * i,:,:,:]
+            interpo_res[i][:,:3,256:512,256:512] = rife_res[2 + 4 * i,:,:,:]
+            interpo_res[i][:,3,0:256,128:128+256] = rife_res[3 + 4 * i,0,:,:]
+            interpo_res[i][:,3,256:512,0:256] = rife_res[3 + 4 * i,1,:,:]
+            interpo_res[i][:,3,256:512,256:512] = rife_res[3 + 4 * i,2,:,:]
 
 
             res = interpo_res[i].reshape(4, image_size * image_size).transpose(0, 1).reshape(image_size, image_size, 4) #Reshape back to (image_size, image_size, 4)

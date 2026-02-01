@@ -96,8 +96,8 @@ class RIFEWrapped(nn.Module):
         img_0_slice_d = torch.concat([img_0[:,1,0:256,128:128+256].unsqueeze(0), img_0_alpha_head, img_0[:,0,0:256,128:128+256].unsqueeze(0)], dim = 1) 
         img_1_slice_d = torch.concat([img_1[:,1,0:256,128:128+256].unsqueeze(0), img_1_alpha_head, img_1[:,0,0:256,128:128+256].unsqueeze(0)], dim = 1)
 
-        img_0_slice_e = torch.concat([img_0[:,3,256:512,0:256].unsqueeze(0), img_0[:,3,256:512,256:512].unsqueeze(0), torch.zeros((1, 1, 256, 256), dtype=torch.uint8, device=img_0.device)], dim = 1) 
-        img_1_slice_e = torch.concat([img_1[:,3,256:512,0:256].unsqueeze(0), img_1[:,3,256:512,256:512].unsqueeze(0), torch.zeros((1, 1, 256, 256), dtype=torch.uint8, device=img_1.device)], dim = 1)
+        img_0_slice_e = torch.concat([img_0[:,3,256:512,0:256].unsqueeze(0), img_0[:,3,256:512,256:512].unsqueeze(0), torch.zeros((1, 1, 256, 256), dtype=dtype, device=img_0.device)], dim = 1) 
+        img_1_slice_e = torch.concat([img_1[:,3,256:512,0:256].unsqueeze(0), img_1[:,3,256:512,256:512].unsqueeze(0), torch.zeros((1, 1, 256, 256), dtype=dtype, device=img_1.device)], dim = 1)
 
         img_0_1_slices = torch.concat([img_0_slice_a, img_0_slice_b, img_0_slice_c, img_0_slice_d, img_0_slice_e, img_1_slice_a, img_1_slice_b, img_1_slice_c, img_1_slice_d, img_1_slice_e], dim=0)
         img_0_1_slices_encoded = self.encoder(img_0_1_slices)

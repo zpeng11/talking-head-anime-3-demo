@@ -7,13 +7,13 @@ import sys
 import os
 sys.path.append(os.getcwd())
 
-device = 'cpu'
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
 model_name = os.path.join('RIFE', "flownet.pkl") 
 
 
 dtype = torch.float if 'fp32' in sys.argv[1] else torch.half
 num_interpo = int(sys.argv[2])
-export_name = sys.argv[3]
+export_name = f'rife_x{num_interpo}_{"fp32" if dtype==torch.float else "fp16"}.onnx'
 image_size = 512
 
 image_slice = 256
@@ -28,7 +28,7 @@ def init_module(
     device: torch.device,
     dtype: torch.dtype,
     Head: nn.Module):
-    state_dict = torch.load(model_name, map_location="cpu", weights_only=True, mmap=True)
+    state_dict = torch.load(model_name, map_location='cuda' if torch.cuda.is_available() else 'cpu', weights_only=True, mmap=True)
     state_dict = {k.replace("module.", ""): v for k, v in state_dict.items() if "module." in k}
 
     with torch.device("meta"):
@@ -74,15 +74,16 @@ class RIFEWrapped(nn.Module):
         if tha_img_0.dtype != torch.uint8 or tha_img_1.dtype != torch.uint8:
             raise ValueError('Data type error!')
         shapes = tha_img_0.shape
-        if len(shapes) != 3 or shapes[0] != image_size or shapes[1] != image_size or shapes[2] != 4:
+        if len(shapes) != 4 or shapes[1] != image_size or shapes[2] != image_size or shapes[3] != 4:
             raise ValueError('No a proper shape input')
         shapes = tha_img_1.shape
-        if len(shapes) != 3 or shapes[0] != image_size or shapes[1] != image_size or shapes[2] != 4:
+        if len(shapes) != 4 or shapes[1] != image_size or shapes[2] != image_size or shapes[3] != 4:
             raise ValueError('No a proper shape input')
-
+        tha_img_0 = tha_img_0.to(dtype)
+        tha_img_1 = tha_img_1.to(dtype)
         # BGRA to RGBA, uint8 to float/half, range to (0.0,1.0), shape to (1,4,image_size,image_size)
-        img_0 = (tha_img_0.to(dtype)[:,:, [2,1,0,3]] / 255.0).reshape(image_size * image_size, 4).transpose(0,1).reshape(1,4, image_size,image_size)
-        img_1 = (tha_img_1.to(dtype)[:,:, [2,1,0,3]] / 255.0).reshape(image_size * image_size, 4).transpose(0,1).reshape(1,4, image_size,image_size)
+        img_0 = tha_img_0[:,:,:, [2,1,0,3]].permute(0, 3, 1, 2) / 255.0
+        img_1 = tha_img_1[:,:,:, [2,1,0,3]].permute(0, 3, 1, 2) / 255.0
 
         img_0_slice_a = img_0[:,:3,0:256,128:128+256] 
         img_1_slice_a = img_1[:,:3,0:256,128:128+256]
@@ -135,15 +136,16 @@ class RIFEWrapped(nn.Module):
             interpo_res[:,3,256:512,256:512] = rife_res[4 + 5 * i,1,:,:]
 
 
-            res = interpo_res.reshape(4, image_size * image_size).transpose(0, 1).reshape(image_size, image_size, 4) #Reshape back to (image_size, image_size, 4)
-            res = res[:, :, [2,1,0,3]] #RGBA back to BGRA
-            res = torch.clip(res * 255.0, 0.0, 255.0) #range back to (0.0, 255.0)
-            ret_res.append(res.to(torch.uint8)) #dtype back to uint8
+            # CHW to HWC: (1,4,H,W) -> (H,W,4)
+            res = interpo_res.permute(0, 2, 3, 1)  # (1,4,512,512) -> (1,512,512,4)
+            res = res[:, :, :, [2,1,0,3]]  # RGBA back to BGRA
+            res = (res * 255.0).clamp(0.0, 255.0)
+            ret_res.append(res)
 
         #Append latest tha result
         ret_res.append(tha_img_1) #dtype back to uint8
 
-        return ret_res
+        return torch.concat(ret_res, dim=0).to(torch.uint8)  #shape to (num_interpo, image_size, image_size, 4)
     
 flownet, encoder = init_module(model_name, IFNet, 1.0, False, device, dtype, Head)
 rife = RIFEWrapped(flownet, encoder).eval()
@@ -152,66 +154,30 @@ rife = RIFEWrapped(flownet, encoder).eval()
 
 
 
-img_0 = (torch.rand((image_size,image_size, 4), device=device) * 255.0).to(torch.uint8)
-img_1 = (torch.rand((image_size,image_size, 4), device=device) * 255.0).to(torch.uint8)
+img_0 = (torch.rand((1, image_size,image_size, 4), device=device) * 255.0).to(torch.uint8)
+img_1 = (torch.rand((1, image_size,image_size, 4), device=device) * 255.0).to(torch.uint8)
 input_list = ['tha_img_0', 'tha_img_1']
 
-output_list =[]
-for i in range(num_interpo - 1):
-    output_list.append(f'interpo_{i}')
-output_list.append('tha_res')
+output_list =["rife_outputs"]
 input_tuple = (img_0, img_1)
 
 import onnx
 from onnxsim import simplify
 torch.onnx.export(rife,
                   input_tuple,
-                  export_name+".onnx",
+                  export_name,
                   export_params=True,
                   opset_version=16,
                   do_constant_folding=True,
                   input_names= input_list,
-                  output_names= output_list
+                  output_names= output_list,
+                  dynamo=False  # Add this line to disable the new exporter
                   )
 
-onnx_model = onnx.load(export_name+".onnx")
+onnx_model = onnx.load(export_name)
 onnx.checker.check_model(onnx_model)
 onnx_model_sim, check = simplify(onnx_model)
 if check:
-    onnx.save(onnx_model_sim, export_name+".onnx")
+    onnx.save(onnx_model_sim, export_name)
 else:
     raise ValueError("Simplify error")
-
-
-
-# convert('.','.',export_name, 'fp16')
-
-
-# rife_engine = load_engine(export_name+'.trt')
-# rife_proc = Processor(rife_engine, 2)
-
-# for i in range(20):
-#     img_0 = torch.rand((1,4,image_size,image_size), dtype=dtype, device=device)
-#     img_1 = torch.rand((1,4,image_size,image_size), dtype=dtype, device=device)
-#     ec0 = encoder(img_0[:,:3,:,:])
-#     ec1 = encoder(img_1[:,:3,:,:])
-
-#     ref_output_1  = flownet(img_0[:,:3,:,:], img_1[:,:3,:,:], timestep1, tenFlow_div, backwarp_tenGrid, ec0, ec1).cpu().detach().numpy()
-#     ref_output_2  = flownet(img_0[:,:3,:,:], img_1[:,:3,:,:], timestep2, tenFlow_div, backwarp_tenGrid, ec0, ec1).cpu().detach().numpy()
-#     ref_output_3  = flownet(img_0[:,:3,:,:], img_1[:,:3,:,:], timestep3, tenFlow_div, backwarp_tenGrid, ec0, ec1).cpu().detach().numpy()
-
-#     trt_res = rife_proc.inference([img_0.cpu().detach().numpy(), img_1.cpu().detach().numpy()])
-    
-#     # print(wrapped_output.mean(), wrapped_output.max(), trt_res.mean(), trt_res.max())
-#     print("1st MSE is: ",((trt_res[0][:,:3,:,:] - ref_output_1) ** 2).mean())
-#     print("1st MSE is: ",((trt_res[1][:,:3,:,:] - ref_output_2) ** 2).mean())
-#     print("1st MSE is: ",((trt_res[2][:,:3,:,:] - ref_output_3) ** 2).mean())
-
-
-# from tqdm import tqdm
-# from time import time 
-# t1 = time()
-# for i in tqdm(range(1000)):
-#     rife_proc.kickoff()
-
-# print(time() - t1)
